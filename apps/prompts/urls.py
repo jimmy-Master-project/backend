@@ -1,0 +1,96 @@
+from django.urls import path
+
+from .views import (
+    EvaluationPromptDetailView,
+    EvaluationPromptListCreateView,
+    EvaluationPromptPopulationView,
+    GeneratePromptPopulationView,
+    PromptDetailView,
+    PromptListCreateView,
+    PromptPopulationDetailView,
+)
+
+urlpatterns = [
+    path(
+        "prompt-populations/generate",
+        GeneratePromptPopulationView.as_view(),
+        name="global-prompt-population-generate-no-slash",
+    ),
+    path(
+        "prompt-populations/generate/",
+        GeneratePromptPopulationView.as_view(),
+        name="global-prompt-population-generate",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-population/generate",
+        GeneratePromptPopulationView.as_view(),
+        name="prompt-population-generate-singular-no-slash",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-population/generate/",
+        GeneratePromptPopulationView.as_view(),
+        name="prompt-population-generate-singular",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-populations/generate",
+        GeneratePromptPopulationView.as_view(),
+        name="prompt-population-generate-no-slash",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-populations/generate/",
+        GeneratePromptPopulationView.as_view(),
+        name="prompt-population-generate",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-population",
+        EvaluationPromptPopulationView.as_view(),
+        name="evaluation-prompt-population-no-slash",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-population/",
+        EvaluationPromptPopulationView.as_view(),
+        name="evaluation-prompt-population",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompts",
+        EvaluationPromptListCreateView.as_view(),
+        name="evaluation-prompt-list-create-no-slash",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompts/",
+        EvaluationPromptListCreateView.as_view(),
+        name="evaluation-prompt-list-create",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompts/<int:pk>",
+        EvaluationPromptDetailView.as_view(),
+        name="evaluation-prompt-detail-no-slash",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompts/<int:pk>/",
+        EvaluationPromptDetailView.as_view(),
+        name="evaluation-prompt-detail",
+    ),
+    path(
+        "prompt-populations/<int:pk>",
+        PromptPopulationDetailView.as_view(),
+        name="prompt-population-detail-no-slash",
+    ),
+    path(
+        "prompt-populations/<int:pk>/",
+        PromptPopulationDetailView.as_view(),
+        name="prompt-population-detail",
+    ),
+    path(
+        "prompt-populations/<int:population_id>/prompts",
+        PromptListCreateView.as_view(),
+        name="prompt-list-create-no-slash",
+    ),
+    path(
+        "prompt-populations/<int:population_id>/prompts/",
+        PromptListCreateView.as_view(),
+        name="prompt-list-create",
+    ),
+    path("prompts/<int:pk>", PromptDetailView.as_view(), name="prompt-detail-no-slash"),
+    path("prompts/<int:pk>/", PromptDetailView.as_view(), name="prompt-detail"),
+]
