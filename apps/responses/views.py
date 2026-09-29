@@ -185,3 +185,22 @@ class RunResponseListView(APIView):
                 "results": LLMResponseSerializer(queryset, many=True).data,
             }
         )
+
+
+class RunResponseDeleteView(APIView):
+    def delete(self, request, run_id, response_id):
+        with transaction.atomic():
+            run = get_object_or_404(
+                EvaluationRun.objects.select_for_update(), pk=run_id
+            )
+            if run.status == EvaluationRun.Status.RUNNING:
+                return Response(
+                    {"error": "Responses cannot be deleted while a run is active."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            response = get_object_or_404(run.responses, pk=response_id)
+            response.delete()
+            run.completed_generations = run.responses.count()
+            run.completed_prompts = run.responses.values("prompt_id").distinct().count()
+            run.save(update_fields=["completed_generations", "completed_prompts"])
+        return Response(status=status.HTTP_204_NO_CONTENT)

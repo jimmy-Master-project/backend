@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import EvaluationResponseListView, RunResponseListView
+from .views import EvaluationResponseListView, RunResponseDeleteView, RunResponseListView
 
 urlpatterns = [
     path(
@@ -22,5 +22,15 @@ urlpatterns = [
         "runs/<int:run_id>/responses/",
         RunResponseListView.as_view(),
         name="run-responses",
+    ),
+    path(
+        "runs/<int:run_id>/responses/<int:response_id>",
+        RunResponseDeleteView.as_view(),
+        name="run-response-delete-no-slash",
+    ),
+    path(
+        "runs/<int:run_id>/responses/<int:response_id>/",
+        RunResponseDeleteView.as_view(),
+        name="run-response-delete",
     ),
 ]

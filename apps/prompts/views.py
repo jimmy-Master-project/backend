@@ -51,6 +51,7 @@ def _serialize_population_summary(population):
     if population is None:
         return {
             "generationModel": "",
+            "provider": "",
             "temperature": 0,
             "requested": 0,
             "generated": 0,
@@ -60,6 +61,7 @@ def _serialize_population_summary(population):
     fairness = metadata.get("fairness") if isinstance(metadata.get("fairness"), dict) else {}
     return {
         "generationModel": population.model_name,
+        "provider": population.provider,
         "temperature": population.temperature,
         "requested": population.requested_prompt_count,
         "generated": population.actual_prompt_count,
