@@ -1,9 +1,9 @@
 from django.urls import path
 
-from .views import BoldValidationView
+from .views import DialogSumValidationView
 
 
 urlpatterns = [
-    path("benchmark/bold", BoldValidationView.as_view()),
-    path("benchmark/bold/", BoldValidationView.as_view()),
+    path("benchmark/dialogsum", DialogSumValidationView.as_view()),
+    path("benchmark/dialogsum/", DialogSumValidationView.as_view()),
 ]

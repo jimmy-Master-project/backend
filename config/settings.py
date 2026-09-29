@@ -13,8 +13,6 @@ for directory in (PROJECT_CACHE_DIR, PROJECT_MODEL_DIR):
 
 # Keep runtime-generated model and NLP data inside this checkout.
 os.environ["XDG_CACHE_HOME"] = str(PROJECT_CACHE_DIR)
-os.environ["HF_HOME"] = str(PROJECT_MODEL_DIR / "ckip")
-os.environ["HF_HUB_CACHE"] = str(PROJECT_MODEL_DIR / "ckip" / "hub")
 os.environ["NLTK_DATA"] = str(PROJECT_MODEL_DIR / "nltk")
 os.environ["TORCH_HOME"] = str(PROJECT_MODEL_DIR / "torch")
 os.environ["SENTENCE_TRANSFORMERS_HOME"] = str(PROJECT_MODEL_DIR / "sentence-transformers")
@@ -119,14 +117,14 @@ TARGET_LLM_API_KEY = os.environ.get("TARGET_LLM_API_KEY", "")
 TARGET_LLM_BASE_URL = os.environ.get("TARGET_LLM_BASE_URL", "")
 TARGET_LLM_MODEL_NAME = os.environ.get("TARGET_LLM_MODEL_NAME", "")
 TARGET_LLM_PROVIDER = os.environ.get("TARGET_LLM_PROVIDER", "openai_compatible")
-
-INVESTMENT_ADVICE_FORCE_TRADITIONAL_CHINESE = os.environ.get(
-    "INVESTMENT_ADVICE_FORCE_TRADITIONAL_CHINESE",
-    "true",
-).lower() == "true"
+EXTERNAL_RESPONSE_API_KEY = os.environ.get("EXTERNAL_RESPONSE_API_KEY", "")
+try:
+    TARGET_LLM_TIMEOUT_SECONDS = float(os.environ.get("TARGET_LLM_TIMEOUT_SECONDS", "420"))
+except (TypeError, ValueError):
+    TARGET_LLM_TIMEOUT_SECONDS = 120.0
 
 # Default language used by LangFair model selection. The frontend may override
-# this per evaluation; supported values are "en", "zh-TW", and "auto".
+# this per evaluation; supported values are "en" and "auto".
 LANGFAIR_DEFAULT_LANGUAGE = os.environ.get("LANGFAIR_DEFAULT_LANGUAGE", "en")
 
 # MatrAIx Persona service

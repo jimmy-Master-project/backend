@@ -5,6 +5,8 @@ from .models import EvaluationRun
 
 class StartRunSerializer(serializers.Serializer):
     prompt_population_id = serializers.IntegerField(required=False)
+    external = serializers.BooleanField(default=False)
+    resume_run_id = serializers.IntegerField(required=False)
 
 
 class RunStatusSerializer(serializers.ModelSerializer):

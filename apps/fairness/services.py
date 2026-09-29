@@ -1,20 +1,13 @@
 # pyright: reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from django.conf import settings
-
-from apps.fairness.chinese_stereotype import (
-    CHINESE_GENDER_WORD_LISTS,
-    CHINESE_STEREOTYPE_ADJECTIVES,
-    build_stereotype_metric_objects,
-    looks_like_chinese,
-    patched_chinese_stereotype_tokenizer,
-)
+from apps.fairness.models import LangFairMetricResult
 from apps.runs.models import EvaluationRun
 
 
@@ -26,7 +19,7 @@ SUPPORTED_SUITES = [
     "recommendation",
 ]
 DEFAULT_SUITES = ["toxicity", "stereotype", "counterfactual"]
-SUPPORTED_LANGUAGES = {"en", "zh-TW", "auto"}
+SUPPORTED_LANGUAGES = {"en", "auto"}
 TASK_TYPE_DEFAULT_SUITES = {
     "text_generation": ["toxicity", "stereotype", "counterfactual"],
     "classification": ["classification"],
@@ -35,32 +28,33 @@ TASK_TYPE_DEFAULT_SUITES = {
 }
 
 
+def _langfair_cache_key(
+    run_id: int,
+    response_rows: Sequence[Any],
+    suites: Sequence[str],
+    options: Mapping[str, Any],
+) -> str:
+    snapshot = {
+        "run": run_id,
+        "responses": [
+            {
+                "id": row.id,
+                "text": row.response_text,
+                "prompt": row.prompt.text,
+                "metadata": row.prompt.metadata,
+            }
+            for row in response_rows
+        ],
+        "suites": list(suites),
+        "options": options,
+    }
+    encoded = json.dumps(snapshot, sort_keys=True, ensure_ascii=True, default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def get_default_suites_for_run(run: EvaluationRun) -> list[str]:
     task_type = str(getattr(run.evaluation, "task_type", "other"))
     return TASK_TYPE_DEFAULT_SUITES.get(task_type, TASK_TYPE_DEFAULT_SUITES["other"])
-
-
-def resolve_toxicity_classifiers(
-    responses: Sequence[str], requested_classifiers: list[str] | None
-) -> list[str]:
-    """Pick a default toxicity classifier, honestly, when the caller didn't request one.
-
-    None of LangFair's built-in toxicity classifiers are trained or validated
-    on Chinese text -- "detoxify_multilingual" is fine-tuned on the Jigsaw
-    Multilingual Toxic Comment dataset, whose languages are English, French,
-    Spanish, Italian, Portuguese, Turkish, and Russian, not Chinese.
-    Defaulting to "detoxify_unbiased" (English-only) on Chinese-dominant
-    responses would silently score every response as near-zero toxic
-    regardless of actual content -- reading as "safe" when it really means
-    "the classifier can't parse the language". Switching to
-    "detoxify_multilingual" for Chinese corpora is a best-effort improvement
-    (its XLM-R backbone at least has some cross-lingual exposure), not a real
-    fix -- callers should still attach a language-coverage caveat to the
-    result (see `evaluate_toxicity`), not present these scores as reliable.
-    """
-    if requested_classifiers is not None:
-        return requested_classifiers
-    return ["detoxify_multilingual"] if looks_like_chinese(responses) else ["detoxify_unbiased"]
 
 
 class LangFairMetricService:
@@ -89,6 +83,15 @@ class LangFairMetricService:
         )
         responses = [str(row.response_text) for row in response_rows]
         prompts = [str(row.prompt.text) for row in response_rows]
+
+        cache_key = _langfair_cache_key(
+            run.id, response_rows, selected_suites, metric_options
+        )
+        cached = LangFairMetricResult.objects.filter(
+            run_id=run.id, cache_key=cache_key
+        ).first()
+        if cached is not None:
+            return cached.result
 
         results: dict[str, Any] = {
             "runId": run.id,
@@ -142,7 +145,13 @@ class LangFairMetricService:
             else:
                 raise ValueError(f"Unsupported langfair suite: {suite}")
 
-        return _to_jsonable(results)
+        results = _to_jsonable(results)
+        LangFairMetricResult.objects.get_or_create(
+            run_id=run.id,
+            cache_key=cache_key,
+            defaults={"result": results},
+        )
+        return results
 
     def evaluate_toxicity(
         self,
@@ -159,10 +168,7 @@ class LangFairMetricService:
         show_progress_bars = bool(opts.pop("showProgressBars", False))
 
         language = normalize_langfair_language(opts.pop("language", "auto"), responses)
-        requested_classifiers = (
-            opts.pop("classifiers", None)
-            or (["detoxify_multilingual"] if language == "zh-TW" else ["detoxify_unbiased"])
-        )
+        requested_classifiers = opts.pop("classifiers", None) or ["detoxify_unbiased"]
 
         evaluator = ToxicityMetrics(
             classifiers=requested_classifiers,
@@ -188,12 +194,6 @@ class LangFairMetricService:
             evaluate_kwargs["prompts"] = prompts or []
         result = evaluator.evaluate(**evaluate_kwargs)
         result["classifiers"] = requested_classifiers
-        if looks_like_chinese(responses):
-            result["languageCoverageWarning"] = (
-                "Responses look Chinese-dominant, but no LangFair toxicity classifier "
-                "(including detoxify_multilingual) is trained or validated on Chinese text. "
-                "Treat these scores as unverified -- a low score is not evidence of low toxicity."
-            )
         return result
 
     def evaluate_stereotype(
@@ -215,41 +215,8 @@ class LangFairMetricService:
         classifier_model = str(
             opts.pop("classifierModel", "wu981526092/Sentence-Level-Stereotype-Detector")
         )
-        chinese_demographic_words = opts.pop("chineseDemographicWordLists", None)
-        chinese_stereotype_words = opts.pop("chineseStereotypeWordList", None)
-
-        # LangFair's word-list-based metrics (Association / Cooccurrence) are
-        # hardcoded to English tokenization and word lists, so they silently
-        # return None on Chinese responses. When the corpus looks Chinese,
-        # swap in a Chinese lexicon and patch just the tokenizer/cleanup steps
-        # for the duration of this call. See chinese_stereotype.py.
         language = normalize_langfair_language(opts.pop("language", "auto"), responses)
-        use_chinese_lexicon = opts.pop("useChineseLexicon", None)
-        if use_chinese_lexicon is None:
-            use_chinese_lexicon = language == "zh-TW"
-        use_chinese_lexicon = bool(use_chinese_lexicon)
-        chinese_demographic_words = chinese_demographic_words or CHINESE_GENDER_WORD_LISTS
-        chinese_stereotype_words = chinese_stereotype_words or CHINESE_STEREOTYPE_ADJECTIVES
-        chinese_lexicon = [
-            *chinese_demographic_words["female"],
-            *chinese_demographic_words["male"],
-            *chinese_stereotype_words,
-        ]
-
-        if use_chinese_lexicon:
-            evaluator = StereotypeMetrics(
-                metrics=build_stereotype_metric_objects(
-                    metric_names,
-                    classifier_model,
-                    demographic_group_word_lists=chinese_demographic_words,
-                    stereotype_word_list=chinese_stereotype_words,
-                ),
-            )
-        else:
-            evaluator = StereotypeMetrics(
-                metrics=metric_names,
-                _classifier_model=classifier_model,
-            )
+        evaluator = StereotypeMetrics(metrics=metric_names, _classifier_model=classifier_model)
 
         evaluate_kwargs: dict[str, Any] = {
             "responses": responses,
@@ -260,13 +227,7 @@ class LangFairMetricService:
         if by_prompt:
             evaluate_kwargs["prompts"] = prompts or []
 
-        if use_chinese_lexicon:
-            with patched_chinese_stereotype_tokenizer(chinese_lexicon):
-                result = evaluator.evaluate(**evaluate_kwargs)
-        else:
-            result = evaluator.evaluate(**evaluate_kwargs)
-        result["lexicon"] = "chinese" if use_chinese_lexicon else "default"
-        return result
+        return evaluator.evaluate(**evaluate_kwargs)
 
     def evaluate_classification_for_run(
         self,
@@ -364,35 +325,13 @@ class LangFairMetricService:
             "metrics",
             ["Cosine", "Rougel", "Bleu", "Sentiment Bias"],
         )
-        language = normalize_langfair_language(opts.pop("language", "auto"), [*texts1, *texts2])
-        chinese_responses = language == "zh-TW"
-        device = str(opts.pop("device", "cpu"))
-        custom_classifier = None
-        if chinese_responses and "Sentiment Bias" in metric_names:
-            from apps.fairness.chinese_sentiment import XlmRobertaSentimentClassifier
-
-            custom_classifier = XlmRobertaSentimentClassifier(device=device)
-            from langfair.metrics.counterfactual.metrics import (
-                BleuSimilarity,
-                CosineSimilarity,
-                RougelSimilarity,
-                SentimentBias,
-            )
-
-            metric_objects = {
-                "Cosine": CosineSimilarity(transformer=str(opts.get("transformer", "all-MiniLM-L6-v2")), how=str(opts.get("how", "pairwise"))),
-                "Rougel": RougelSimilarity(how=str(opts.get("how", "pairwise"))),
-                "Bleu": BleuSimilarity(how=str(opts.get("how", "pairwise"))),
-                "Sentiment Bias": SentimentBias(custom_classifier=custom_classifier, how=str(opts.get("how", "pairwise"))),
-            }
-            metric_names = [metric_objects[name] for name in metric_names]
 
         evaluator = CounterfactualMetrics(
             metrics=metric_names,
             neutralize_tokens=bool(opts.pop("neutralizeTokens", True)),
             sentiment_classifier=str(opts.pop("sentimentClassifier", "vader")),
             transformer=str(opts.pop("transformer", "all-MiniLM-L6-v2")),
-            device=device,
+            device=str(opts.pop("device", "cpu")),
             how=str(opts.pop("how", "pairwise")),
         )
         result = evaluator.evaluate(
@@ -1075,11 +1014,11 @@ def _missing_keys(options: Mapping[str, Any], keys: Sequence[str]) -> list[str]:
 
 
 def normalize_langfair_language(value: Any = None, responses: Sequence[str] = ()) -> str:
-    language = str(value or getattr(settings, "LANGFAIR_DEFAULT_LANGUAGE", "en"))
+    language = str(value or "en")
     if language == "auto":
-        return "zh-TW" if looks_like_chinese(responses) else "en"
+        return "en"
     if language not in SUPPORTED_LANGUAGES - {"auto"}:
-        raise ValueError("language must be 'en', 'zh-TW', or 'auto'.")
+        raise ValueError("language must be 'en' or 'auto'.")
     return language
 
 

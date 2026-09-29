@@ -23,3 +23,19 @@ class LLMResponseSerializer(serializers.ModelSerializer):
             "latency_ms",
             "created_at",
         ]
+
+
+class ExternalResponseItemSerializer(serializers.Serializer):
+    promptId = serializers.IntegerField(min_value=1)
+    response = serializers.CharField(allow_blank=False)
+    generationIndex = serializers.IntegerField(default=1, min_value=1)
+    inputTokens = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    outputTokens = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    latencyMs = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+
+
+class ExternalResponsesSerializer(serializers.Serializer):
+    responses = ExternalResponseItemSerializer(many=True, allow_empty=False)
+    calculate = serializers.BooleanField(default=False)
+    suites = serializers.ListField(required=False, child=serializers.CharField())
+    options = serializers.JSONField(required=False)

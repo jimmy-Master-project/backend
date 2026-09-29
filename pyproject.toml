@@ -9,7 +9,6 @@ dependencies = [
     "django-cors-headers>=4.9.0",
     "djangorestframework>=3.18.0",
     "httpx>=0.28.1",
-    "ckip-transformers>=0.3.4",
     "langfair==0.8.0",
     "protobuf>=4.25.0",
     "openai>=3.0.0",

@@ -1,9 +1,10 @@
 # pyright: reportMissingImports=false
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.test import TestCase
 
 from apps.evaluations.models import Evaluation
+from .models import PromptPopulation
 
 from .services import (
     append_instruction,
@@ -14,7 +15,35 @@ from .services import (
     with_classification_prompt_constraints,
     with_prompt_constraints,
     with_recommendation_prompt_constraints,
+    PromptPopulationGenerationService,
 )
+
+
+class TaskObjectiveGenerationTests(TestCase):
+    def test_generates_requested_count_for_each_objective(self):
+        evaluation = Evaluation.objects.create(
+            name="Support questions",
+            use_case_description="Uploaded objectives",
+            task_type=Evaluation.TaskType.TEXT_GENERATION,
+            task_objectives=[{"objective": "System operation"}, {"objective": "Login help"}],
+        )
+        population = PromptPopulation.objects.create(
+            evaluation=evaluation,
+            provider="test",
+            model_name="agent",
+            requested_prompt_count=4,
+        )
+        with patch("apps.prompts.services.PromptGenerationService") as service_class:
+            service_class.return_value.generate_population.return_value = [{"text": "prompt", "category": ""}]
+            prompts = PromptPopulationGenerationService().generate(
+                evaluation,
+                {"provider": "test", "model_name": "agent", "prompt_count": 1, "temperature": 0.8},
+                population,
+            )
+
+        self.assertEqual(service_class.return_value.generate_population.call_count, 2)
+        self.assertEqual([call.kwargs["evaluation"].use_case_description for call in service_class.return_value.generate_population.call_args_list], ["System operation", "Login help"])
+        self.assertEqual([prompt["objective"] for prompt in prompts], ["System operation", "Login help"])
 
 
 class AppendInstructionTests(TestCase):
@@ -154,11 +183,6 @@ class SwapGenderWordsTests(TestCase):
             "As a woman, she believes her career and her mother inspired her.",
         )
 
-    def test_swaps_traditional_chinese_words(self):
-        text = "她是一位女性工程師，她的媽媽也是女性創業家。"
-        swapped = swap_gender_words(text, "female", "male")
-        self.assertEqual(swapped, "他是一位男性工程師，他的爸爸也是男性創業家。")
-
     def test_preserves_capitalization(self):
         text = "Woman: Her plan is solid."
         swapped = swap_gender_words(text, "female", "male")
@@ -188,7 +212,7 @@ class GenderCounterfactualWordSwapTests(TestCase):
     def test_calls_llm_once_per_persona_and_derives_counterfactual_by_swap(self):
         evaluation = Evaluation.objects.create(
             name="ETF advice",
-            use_case_description="我想了解適合長期持有的 ETF，請提供投資建議。",
+            use_case_description="I want long-term ETF investment advice.",
             task_type=Evaluation.TaskType.TEXT_GENERATION,
         )
         personas = [
@@ -198,7 +222,7 @@ class GenderCounterfactualWordSwapTests(TestCase):
                 "missing_attributes": [],
             }
         ]
-        prompt_service = self._prompt_service(["身為一名女性工程師，我想請教長期投資建議。"])
+        prompt_service = self._prompt_service(["As a female engineer, I want long-term investment advice."])
 
         prompts = build_gender_counterfactual_prompts(
             evaluation=evaluation,
@@ -219,8 +243,8 @@ class GenderCounterfactualWordSwapTests(TestCase):
 
         self.assertEqual(len(prompts), 2)
         original, counterfactual = prompts
-        self.assertEqual(original["text"], "身為一名女性工程師，我想請教長期投資建議。")
-        self.assertEqual(counterfactual["text"], "身為一名男性工程師，我想請教長期投資建議。")
+        self.assertEqual(original["text"], "As a female engineer, I want long-term investment advice.")
+        self.assertEqual(counterfactual["text"], "As a male engineer, I want long-term investment advice.")
         self.assertEqual(original["fairness"]["role"], "original")
         self.assertEqual(original["fairness"]["group"], "female")
         self.assertEqual(counterfactual["fairness"]["role"], "counterfactual")

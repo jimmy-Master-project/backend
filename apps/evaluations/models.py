@@ -6,7 +6,6 @@ from django.db import models
 class Evaluation(models.Model):
     class Language(models.TextChoices):
         ENGLISH = "en", "English"
-        TRADITIONAL_CHINESE = "zh-TW", "Traditional Chinese"
         AUTO = "auto", "Auto detect"
 
     class TaskType(models.TextChoices):
@@ -30,6 +29,7 @@ class Evaluation(models.Model):
     language = models.CharField(max_length=8, choices=Language.choices, default=Language.ENGLISH)
     classification_labels = models.JSONField(default=list, blank=True)
     recommendation_items = models.JSONField(default=list, blank=True)
+    task_objectives = models.JSONField(default=list, blank=True)
     status = models.CharField(
         max_length=32, choices=Status.choices, default=Status.DRAFT
     )

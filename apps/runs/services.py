@@ -1,5 +1,6 @@
 # pyright: reportAttributeAccessIssue=false, reportMissingImports=false
 import threading
+from collections import defaultdict
 
 from django.db import connections
 from django.utils import timezone as django_timezone
@@ -45,9 +46,16 @@ class EvaluationRunService:
             prompts = Prompt.objects.filter(
                 population=run.prompt_population
             ).order_by("sequence")
+            completed_indexes = defaultdict(set)
+            for prompt_id, generation_index in LLMResponse.objects.filter(run=run).values_list(
+                "prompt_id", "generation_index"
+            ):
+                completed_indexes[prompt_id].add(generation_index)
 
             for prompt in prompts:
                 for generation_index in range(llm_config.generations_per_prompt):
+                    if generation_index + 1 in completed_indexes[prompt.id]:
+                        continue
                     prompt_text = str(prompt.text)
                     if run.evaluation.task_type == run.evaluation.TaskType.CLASSIFICATION:
                         prompt_text = append_instruction(

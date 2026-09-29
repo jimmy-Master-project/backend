@@ -1,41 +1,7 @@
 from typing import Any
 
-INVESTMENT_KEYWORDS = (
-    "投資",
-    "理財",
-    "股票",
-    "基金",
-    "ETF",
-    "債券",
-    "加密貨幣",
-    "investment",
-    "investing",
-    "financial advice",
-    "stock",
-    "fund",
-    "portfolio",
-)
-
-
-def _is_investment_advice_use_case(evaluation):
-    text = f"{evaluation.name} {evaluation.use_case_description} {evaluation.task_type}"
-    return any(keyword.lower() in text.lower() for keyword in INVESTMENT_KEYWORDS)
-
-
 def _append_language_rule(system_prompt: str, evaluation) -> str:
-    language = getattr(evaluation, "language", "en")
-    if language == "auto":
-        language = "zh-TW" if _is_investment_advice_use_case(evaluation) else "en"
-    if language == "zh-TW":
-        system_prompt += """
-
-Mandatory Language Rule:
-- This is an investment/financial-advice use case.
-- Generate all prompt text in Traditional Chinese (繁體中文) only.
-- Do not generate Simplified Chinese, English, or mixed-language prompts unless a quoted product name/ticker requires it.
-- The generated user prompts should also explicitly ask the target LLM to answer in Traditional Chinese."""
-    else:
-        system_prompt += """
+    system_prompt += """
 
 Mandatory Language Rule:
 - Generate all prompt text and target answers in English unless a quoted proper noun requires otherwise."""
@@ -60,6 +26,17 @@ Recommendation-specific requirements:
 - generate a realistic user request, preference, or context that plausibly relates to at least some of the candidate items above
 - do not mention or invent specific candidate item names in the generated prompt text; the backend will append the fixed candidate list and selection instruction separately
 - do not include any recommendation, ranking, or decision in the generated prompt"""
+
+
+def _task_objectives_block(evaluation) -> str:
+    objectives = getattr(evaluation, "task_objectives", None) or []
+    if not objectives:
+        return ""
+    lines = "\n".join(
+        f"- {item.get('objective', item) if isinstance(item, dict) else item}"
+        for item in objectives
+    )
+    return f"\n\nTask Objectives from uploaded file:\n{lines}\n"
 
 
 def build_prompt_agent_messages(evaluation, prompt_count, additional_instruction=None):
@@ -90,6 +67,7 @@ Generate realistic prompts for the given LLM use case.{classification_requiremen
 
 Use Case:
 {evaluation.use_case_description}
+{_task_objectives_block(evaluation)}
 
 Task Type:
 {evaluation.task_type}
@@ -102,7 +80,6 @@ Requirements:
 - prompts should represent the target use case
 - avoid duplicates
 - provide diverse wording
-- if the use case is related to investment advice, personal finance, stocks, funds, ETFs, portfolio allocation, or other financial recommendations, every generated prompt text and category must be written in Traditional Chinese (繁體中文) only
 - output JSON only
 - for classification tasks, match exactly this schema: {{"prompts": [{{"text": "...", "category": "...", "expected_label": 0}}]}}
 - for non-classification tasks, match exactly this schema: {{"prompts": [{{"text": "...", "category": "..."}}]}}"""
@@ -150,6 +127,7 @@ Generate exactly one realistic user prompt for the given LLM use case, written i
 
 Use Case:
 {evaluation.use_case_description}
+{_task_objectives_block(evaluation)}
 
 Task Type:
 {evaluation.task_type}

@@ -75,7 +75,7 @@ class LLMConfigTestConnectionView(APIView):
 
         try:
             client = build_llm_client(config)
-            client.generate("請用繁體中文簡短回覆：連線測試成功。")
+            client.generate("Reply briefly: connection test successful.")
         except Exception as exc:
             return Response(
                 {"success": False, "message": str(exc)},

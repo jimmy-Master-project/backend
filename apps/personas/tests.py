@@ -363,7 +363,7 @@ class PersonaPromptPopulationTests(TestCase):
         }
         prompt_service_cls.return_value.generate_for_personas.return_value = [
             {
-                "text": "身為一名女性工程師，我想請教長期投資建議。",
+                "text": "As a female engineer, I want long-term investment advice.",
                 "category": "persona",
                 "persona_id": "0042",
                 "persona_attributes": {"gender_identity": "Woman", "age_bracket": "25-34"},
@@ -410,5 +410,5 @@ class PersonaPromptPopulationTests(TestCase):
 
         # The original prompt is exactly what the LLM generated; the
         # counterfactual prompt is that same text with gender words swapped.
-        self.assertEqual(original.text, "身為一名女性工程師，我想請教長期投資建議。")
-        self.assertEqual(counterfactual.text, "身為一名男性工程師，我想請教長期投資建議。")
+        self.assertEqual(original.text, "As a female engineer, I want long-term investment advice.")
+        self.assertEqual(counterfactual.text, "As a male engineer, I want long-term investment advice.")

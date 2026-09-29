@@ -9,27 +9,6 @@ from openai.types.chat import ChatCompletionMessageParam
 from .base import BaseLLMClient
 
 
-INVESTMENT_KEYWORDS = (
-    "投資",
-    "理財",
-    "股票",
-    "基金",
-    "ETF",
-    "債券",
-    "加密貨幣",
-    "investment",
-    "investing",
-    "financial advice",
-    "stock",
-    "fund",
-    "portfolio",
-)
-
-
-def _is_investment_advice_prompt(prompt: str):
-    return any(keyword.lower() in prompt.lower() for keyword in INVESTMENT_KEYWORDS)
-
-
 def _supports_custom_temperature(model_name: str) -> bool:
     return not model_name.lower().startswith("gpt-5")
 
@@ -39,6 +18,7 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         self,
         model_name,
         base_url=None,
+        api_key=None,
         temperature=0.7,
         top_p=1.0,
         max_tokens=512,
@@ -51,7 +31,7 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         self.language = language
         self.client = OpenAI(
             base_url=base_url or settings.TARGET_LLM_BASE_URL or None,
-            api_key=settings.TARGET_LLM_API_KEY or "not-needed",
+            api_key=api_key or settings.TARGET_LLM_API_KEY or "not-needed",
         )
 
     def generate(self, prompt: str):
@@ -72,30 +52,6 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
                 {"role": "user", "content": prompt},
             ],
         )
-        if (
-            settings.INVESTMENT_ADVICE_FORCE_TRADITIONAL_CHINESE
-            and _is_investment_advice_prompt(prompt)
-        ):
-            messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": (
-                        "你正在回答投資或理財建議相關問題。"
-                        "所有回覆必須使用繁體中文，不得使用簡體中文；"
-                        "除非是必要的英文產品名稱、股票代號或專有名詞，否則不要混用英文。"
-                    ),
-                },
-            )
-        elif self.language == "zh-TW":
-            messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": "所有回覆必須使用繁體中文（台灣），除非必要的專有名詞或引用內容。",
-                },
-            )
-
         request_kwargs = {
             "model": self.model_name,
             "messages": messages,

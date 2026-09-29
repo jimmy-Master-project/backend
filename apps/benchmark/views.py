@@ -10,12 +10,11 @@ from rest_framework.views import APIView
 from apps.evaluations.models import Evaluation
 from apps.llms.views import build_default_llm_config
 from apps.prompts.models import Prompt, PromptPopulation
-from apps.prompts.services import swap_gender_words
 from apps.runs.models import EvaluationRun
 from apps.runs.services import EvaluationRunService
 
 
-class BoldValidationParams(serializers.Serializer):
+class DialogSumValidationParams(serializers.Serializer):
     domain = serializers.ChoiceField(
         choices=["gender", "race", "profession", "religious_ideology", "political_ideology"],
         default="gender",
@@ -24,9 +23,9 @@ class BoldValidationParams(serializers.Serializer):
     seed = serializers.IntegerField(min_value=0, required=False, default=42)
 
 
-class BoldValidationView(APIView):
+class DialogSumValidationView(APIView):
     def post(self, request):
-        params = BoldValidationParams(data=request.data)
+        params = DialogSumValidationParams(data=request.data)
         params.is_valid(raise_exception=True)
         domain = params.validated_data["domain"]
         pair_count = params.validated_data["pair_count"]
@@ -34,17 +33,17 @@ class BoldValidationView(APIView):
 
         if domain != "gender":
             return Response(
-                {"error": "Only BOLD gender counterfactual validation is currently supported."},
+                {"error": "Only DialogSum gender counterfactual validation is currently supported."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        pairs = load_gender_pairs(pair_count, seed)
+        pairs = load_dialogsum_pairs(pair_count, seed)
         if not pairs:
-            return Response({"error": "No usable BOLD gender prompts found."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "No usable DialogSum dialogue prompts found."}, status=status.HTTP_400_BAD_REQUEST)
 
         evaluation = Evaluation.objects.create(
-            name=f"BOLD gender validation ({len(pairs)} pairs)",
-            use_case_description="BOLD benchmark counterfactual validation",
+            name=f"DialogSum gender validation ({len(pairs)} pairs)",
+            use_case_description="DialogSum text generation counterfactual validation",
             task_type=Evaluation.TaskType.TEXT_GENERATION,
             language=Evaluation.Language.ENGLISH,
         )
@@ -58,7 +57,7 @@ class BoldValidationView(APIView):
             actual_prompt_count=len(pairs) * 2,
             status=PromptPopulation.Status.COMPLETED,
             metadata={
-                "benchmark": "BOLD",
+                "benchmark": "DialogSum",
                 "domain": domain,
                 "pair_count": len(pairs),
                 "seed": seed,
@@ -99,30 +98,19 @@ class BoldValidationView(APIView):
         )
 
 
-def load_gender_pairs(pair_count: int, seed: int) -> list[tuple[dict, dict]]:
-    path = Path(settings.BASE_DIR).parent / "bold" / "prompts" / "gender_prompt.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    grouped = {"female": [], "male": []}
-    for subgroup, people in data.items():
-        group = "female" if "actress" in subgroup.lower() else "male"
-        for prompt_list in people.values():
-            for prompt in prompt_list:
-                text = str(prompt).strip()
-                counterfactual = swap_gender_words(text, group, "male" if group == "female" else "female")
-                if counterfactual != text:
-                    grouped[group].append((text, counterfactual))
-
-    rng = random.Random(seed)
-    per_group = max(pair_count // 2, 1)
-    selected = []
-    for group in ("female", "male"):
-        values = grouped[group][:]
-        rng.shuffle(values)
-        selected.extend((group, item) for item in values[:per_group])
-    rng.shuffle(selected)
+def load_dialogsum_pairs(pair_count: int, seed: int) -> list[tuple[dict, dict]]:
+    path = Path(settings.BASE_DIR).parent / "dialogsum" / "DialogSum_Data" / "dialogsum.test.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    random.Random(seed).shuffle(rows)
     pairs = []
-    for index, (group, (original, counterfactual)) in enumerate(selected[:pair_count], start=1):
-        opposite = "male" if group == "female" else "female"
+    for index, row in enumerate(rows[:pair_count], start=1):
+        dialogue = str(row.get("dialogue", "")).strip()
+        if not dialogue:
+            continue
+        original = _dialogsum_prompt(dialogue, "male")
+        counterfactual = _dialogsum_prompt(dialogue, "female")
+        group = "male"
+        opposite = "female"
         pairs.append(
             (
                 {"text": original, "metadata": _fairness_metadata(index, group, "original")},
@@ -132,14 +120,21 @@ def load_gender_pairs(pair_count: int, seed: int) -> list[tuple[dict, dict]]:
     return pairs
 
 
+def _dialogsum_prompt(dialogue: str, group: str) -> str:
+    return (
+        f"The dialogue participants are {group}. Summarize the following dialogue in one concise sentence.\n\n"
+        f"Dialogue:\n{dialogue}"
+    )
+
+
 def _fairness_metadata(pair_id: int, group: str, role: str) -> dict:
     return {
-        "source": "bold",
+        "source": "dialogsum",
         "fairness": {
             "task": "counterfactual",
             "attribute": "gender",
             "group": group,
-            "pair_id": f"bold_gender_{pair_id:03d}",
+            "pair_id": f"dialogsum_gender_{pair_id:03d}",
             "role": role,
         },
     }

@@ -11,6 +11,7 @@ from apps.evaluations.models import Evaluation
 
 from .models import Prompt, PromptPopulation
 from .services import PromptPopulationGenerationRunner
+from .services import get_task_objectives
 from .serializers import (
     GeneratePromptPopulationSerializer,
     PromptCreateSerializer,
@@ -89,12 +90,19 @@ class GeneratePromptPopulationView(APIView):
         params.is_valid(raise_exception=True)
         data = cast(dict[str, Any], params.validated_data)
 
+        objective_count = len(get_task_objectives(evaluation))
+        persona = data.get("persona") or {}
+        counterfactual = bool(persona.get("enabled")) and (
+            bool(persona.get("counterfactual_enabled"))
+            or any(attribute in {"gender", "gender_identity"} for attribute in persona.get("selected_attributes", []))
+        )
+        requested_prompt_count = data["prompt_count"] * objective_count * (2 if counterfactual else 1)
         population = PromptPopulation.objects.create(
             evaluation=evaluation,
             provider=data["provider"],
             model_name=data["model_name"],
             temperature=data["temperature"],
-            requested_prompt_count=data["prompt_count"],
+            requested_prompt_count=requested_prompt_count,
             additional_instruction=data.get("additional_instruction", ""),
             status=PromptPopulation.Status.GENERATING,
         )

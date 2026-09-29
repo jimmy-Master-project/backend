@@ -2,6 +2,7 @@
 import random
 import re
 import threading
+from copy import copy
 from typing import Any
 
 from django.conf import settings
@@ -29,18 +30,24 @@ class PromptPopulationGenerationService:
         persona_config = data.get("persona") or {}
         if persona_config.get("enabled"):
             return self._generate_with_personas(evaluation, data, population, persona_config)
-        prompts = PromptGenerationService().generate_population(
-            evaluation=evaluation,
-            provider=data["provider"],
-            model_name=data["model_name"],
-            prompt_count=data["prompt_count"],
-            temperature=data["temperature"],
-            base_url=data.get("base_url") or None,
-            additional_instruction=build_fresh_generation_instruction(
-                evaluation,
-                data.get("additional_instruction") or None,
-            ),
-        )
+        objectives = get_task_objectives(evaluation)
+        prompt_service = PromptGenerationService()
+        prompts = []
+        for objective in objectives:
+            objective_evaluation = evaluation_for_objective(evaluation, objective)
+            objective_prompts = prompt_service.generate_population(
+                evaluation=objective_evaluation,
+                provider=data["provider"],
+                model_name=data["model_name"],
+                prompt_count=data["prompt_count"],
+                temperature=data["temperature"],
+                base_url=data.get("base_url") or None,
+                additional_instruction=build_fresh_generation_instruction(
+                    objective_evaluation,
+                    data.get("additional_instruction") or None,
+                ),
+            )
+            prompts.extend({**prompt, "objective": objective} for prompt in objective_prompts)
         return with_prompt_constraints(evaluation, prompts)
 
     def _generate_with_personas(
@@ -135,35 +142,48 @@ class PromptPopulationGenerationService:
                 if evaluation.task_type == Evaluation.TaskType.RECOMMENDATION
                 else "counterfactual"
             )
-            prompts = build_gender_counterfactual_prompts(
-                evaluation=evaluation,
-                personas=personas,
-                prompt_service=prompt_service,
-                provider=data["provider"],
-                model_name=data["model_name"],
-                temperature=data["temperature"],
-                base_url=data.get("base_url") or None,
-                additional_instruction=generation_instruction,
-                fairness_task=fairness_task,
-            )
+            prompts = []
+            for objective in get_task_objectives(evaluation):
+                objective_prompts = build_gender_counterfactual_prompts(
+                    evaluation=evaluation_for_objective(evaluation, objective),
+                    personas=personas,
+                    prompt_service=prompt_service,
+                    provider=data["provider"],
+                    model_name=data["model_name"],
+                    temperature=data["temperature"],
+                    base_url=data.get("base_url") or None,
+                    additional_instruction=generation_instruction,
+                    fairness_task=fairness_task,
+                )
+                for prompt in objective_prompts:
+                    prompt["objective"] = objective
+                prompts.extend(objective_prompts)
             if not prompts:
                 raise PersonaServiceError(
                     "No sampled personas contain a supported gender value for counterfactual pairs."
                 )
             return with_prompt_constraints(evaluation, prompts)
 
-        prompts = prompt_service.generate_for_personas(
-            evaluation=evaluation,
-            provider=data["provider"],
-            model_name=data["model_name"],
-            temperature=data["temperature"],
-            personas=personas,
-            base_url=data.get("base_url") or None,
-            additional_instruction=generation_instruction,
-        )
-        for prompt in prompts:
-            prompt["category"] = evaluation.task_type
-            prompt.pop("expected_label", None)
+        prompts = []
+        for objective in get_task_objectives(evaluation):
+            objective_evaluation = evaluation_for_objective(evaluation, objective)
+            objective_prompts = prompt_service.generate_for_personas(
+                evaluation=objective_evaluation,
+                provider=data["provider"],
+                model_name=data["model_name"],
+                temperature=data["temperature"],
+                personas=personas,
+                base_url=data.get("base_url") or None,
+                additional_instruction=build_fresh_generation_instruction(
+                    objective_evaluation,
+                    data.get("additional_instruction") or None,
+                ),
+            )
+            for prompt in objective_prompts:
+                prompt["category"] = evaluation.task_type
+                prompt["objective"] = objective
+                prompt.pop("expected_label", None)
+            prompts.extend(objective_prompts)
         return with_prompt_constraints(evaluation, prompts)
 
 
@@ -351,49 +371,6 @@ def _replace_whole_word(text: str, source: str, target: str) -> str:
     return pattern.sub(lambda match: _case_preserving(match, target), text)
 
 
-# Ordering only matters for the Chinese pairs, which are matched as plain
-# substrings (Chinese has no word boundaries): more specific phrases must come
-# before the single-character fallback they contain, e.g. "女兒" before "女".
-_CHINESE_GENDER_WORD_PAIRS = {
-    "female_to_male": (
-        ("外婆", "外公"),
-        ("奶奶", "爺爺"),
-        ("媽媽", "爸爸"),
-        ("母親", "父親"),
-        ("女兒", "兒子"),
-        ("妻子", "丈夫"),
-        ("姐姐", "哥哥"),
-        ("妹妹", "弟弟"),
-        ("阿姨", "叔叔"),
-        ("女士", "先生"),
-        ("小姐", "先生"),
-        ("女生", "男生"),
-        ("女性", "男性"),
-        ("她們", "他們"),
-        ("她的", "他的"),
-        ("她", "他"),
-        ("女", "男"),
-    ),
-    "male_to_female": (
-        ("外公", "外婆"),
-        ("爺爺", "奶奶"),
-        ("爸爸", "媽媽"),
-        ("父親", "母親"),
-        ("兒子", "女兒"),
-        ("丈夫", "妻子"),
-        ("哥哥", "姐姐"),
-        ("弟弟", "妹妹"),
-        ("叔叔", "阿姨"),
-        ("先生", "女士"),
-        ("男生", "女生"),
-        ("男性", "女性"),
-        ("他們", "她們"),
-        ("他的", "她的"),
-        ("他", "她"),
-        ("男", "女"),
-    ),
-}
-
 # English pairs use \b-bounded whole-word matching, so ordering does not matter
 # (e.g. "\bmother\b" cannot match inside the contiguous word "grandmother").
 _ENGLISH_GENDER_WORD_PAIRS = {
@@ -462,8 +439,8 @@ def swap_gender_words(text: str, from_group: str, to_group: str) -> str:
     """Best-effort swap of gendered words in free-form LLM-generated text.
 
     This is a deliberately simple rule-based pass (natural language is
-    unstable), covering common Traditional Chinese and English gendered nouns
-    and pronouns. English "her" is ambiguous between possessive ("her career")
+    unstable), covering common English gendered nouns and pronouns. English
+    "her" is ambiguous between possessive ("her career")
     and object ("helped her") use; a following word is treated as possessive.
     """
     if from_group == to_group or from_group not in {"male", "female"} or to_group not in {"male", "female"}:
@@ -472,9 +449,6 @@ def swap_gender_words(text: str, from_group: str, to_group: str) -> str:
     direction = "female_to_male" if from_group == "female" else "male_to_female"
 
     result = text
-    for source, target in _CHINESE_GENDER_WORD_PAIRS[direction]:
-        result = result.replace(source, target)
-
     if direction == "female_to_male":
         result = re.sub(
             r"\bher\b(?=\s+\w)",
@@ -633,9 +607,9 @@ def format_counterfactual_gender(counterfactual_group: str) -> str:
 
 def normalize_gender(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"m", "man", "men", "male", "男", "男性"}:
+    if normalized in {"m", "man", "men", "male"}:
         return "male"
-    if normalized in {"f", "woman", "women", "female", "女", "女性"}:
+    if normalized in {"f", "woman", "women", "female"}:
         return "female"
     return normalized
 
@@ -653,4 +627,25 @@ def build_prompt_metadata(item: dict[str, Any]) -> dict[str, Any]:
                 "fairness": item.get("fairness", {}),
             }
         )
+    if "objective" in item:
+        metadata["task_objective"] = item["objective"]
     return metadata
+
+
+def get_task_objectives(evaluation: Evaluation) -> list[str]:
+    objectives = getattr(evaluation, "task_objectives", None) or []
+    if len(objectives) == 1 and isinstance(objectives[0], list):
+        objectives = objectives[0]
+    normalized = [
+        str(item.get("objective", "")).strip()
+        for item in objectives
+        if isinstance(item, dict) and str(item.get("objective", "")).strip()
+    ]
+    return normalized or [evaluation.use_case_description]
+
+
+def evaluation_for_objective(evaluation: Evaluation, objective: str) -> Evaluation:
+    objective_evaluation = copy(evaluation)
+    objective_evaluation.use_case_description = objective
+    objective_evaluation.task_objectives = []
+    return objective_evaluation

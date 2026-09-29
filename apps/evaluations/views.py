@@ -1,14 +1,34 @@
 # pyright: reportAttributeAccessIssue=false
 from django.db import connection
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+from rest_framework.response import Response
+from rest_framework import status
 
 from .models import Evaluation
 from .serializers import EvaluationSerializer
+from .task_input import TaskInputError, parse_task_file
 
 
 class EvaluationListCreateView(ListCreateAPIView):
     queryset = Evaluation.objects.all()
     serializer_class = EvaluationSerializer
+
+    def create(self, request, *args, **kwargs):
+        # Convert multipart QueryDict to a plain dict before inserting the
+        # parsed list; assigning a list directly to QueryDict adds one nesting level.
+        data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
+        upload = request.FILES.get("task_file")
+        if upload:
+            try:
+                data["taskObjectives"] = parse_task_file(upload)
+                if not data.get("useCaseDescription"):
+                    data["useCaseDescription"] = "Uploaded task objectives"
+            except TaskInputError as exc:
+                return Response({"task_file": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class EvaluationDetailView(RetrieveUpdateDestroyAPIView):

@@ -4,18 +4,12 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from .chinese_stereotype import (
-    _chinese_safe_transform_token,
-    _merge_lexicon_tokens,
-    looks_like_chinese,
-)
 from .services import (
     LangFairMetricService,
     build_counterfactual_text_pairs,
     build_recommendation_metric_inputs,
     extract_recommendation_items,
     infer_stereotype_categories,
-    resolve_toxicity_classifiers,
 )
 
 
@@ -25,6 +19,37 @@ def _response(response_id, response_text, fairness, persona_attributes=None):
         metadata["persona_attributes"] = persona_attributes
     prompt = SimpleNamespace(metadata=metadata)
     return SimpleNamespace(id=response_id, prompt=prompt, response_text=response_text)
+
+
+class LangFairMetricCacheTests(TestCase):
+    @patch("apps.fairness.services.LangFairMetricResult")
+    @patch.object(LangFairMetricService, "evaluate_toxicity")
+    def test_reuses_persisted_result(self, evaluate_toxicity, result_model):
+        response = SimpleNamespace(
+            id=1,
+            response_text="response",
+            generation_index=0,
+            prompt=SimpleNamespace(text="prompt", metadata={}),
+        )
+        run = SimpleNamespace(
+            id=1,
+            evaluation=SimpleNamespace(task_type="text_generation", language="en"),
+            responses=SimpleNamespace(
+                select_related=lambda *_: SimpleNamespace(
+                    order_by=lambda *_: [response]
+                )
+            ),
+        )
+        stored = {"runId": 1, "suites": {"toxicity": {"score": 1}}}
+        result_model.objects.filter.return_value.first.side_effect = [None, SimpleNamespace(result=stored)]
+        evaluate_toxicity.return_value = {"score": 1}
+
+        service = LangFairMetricService()
+        calculated = service.evaluate_run(run)
+        self.assertEqual(calculated["suites"]["toxicity"], {"score": 1})
+        self.assertEqual(service.evaluate_run(run), stored)
+        evaluate_toxicity.assert_called_once()
+        result_model.objects.get_or_create.assert_called_once()
 
 
 class ExtractRecommendationItemsTests(TestCase):
@@ -283,7 +308,6 @@ class InferStereotypeCategoriesTests(TestCase):
         ]
 
         self.assertEqual(infer_stereotype_categories(rows), ["gender"])
-
     def test_ignores_persona_attribute_keys_not_part_of_the_diagnosed_attribute(self):
         # persona_attributes now carries every dimension MatrAIx returns (age,
         # ethnicity, etc.), not just the attribute actually being diagnosed
@@ -310,130 +334,3 @@ class InferStereotypeCategoriesTests(TestCase):
         rows = [_response(1, "resp", {})]
 
         self.assertEqual(infer_stereotype_categories(rows), ["gender"])
-
-
-class ResolveToxicityClassifiersTests(TestCase):
-    def test_defaults_to_english_classifier_for_english_responses(self):
-        self.assertEqual(
-            resolve_toxicity_classifiers(["This is a plain English sentence about investing."], None),
-            ["detoxify_unbiased"],
-        )
-
-    def test_defaults_to_multilingual_classifier_for_chinese_responses(self):
-        self.assertEqual(
-            resolve_toxicity_classifiers(["這是一段繁體中文的回應內容，包含許多中文字元。"], None),
-            ["detoxify_multilingual"],
-        )
-
-    def test_respects_explicitly_requested_classifiers_even_for_chinese(self):
-        self.assertEqual(
-            resolve_toxicity_classifiers(["這是一段繁體中文的回應內容。"], ["toxigen"]),
-            ["toxigen"],
-        )
-
-
-class LooksLikeChineseTests(TestCase):
-    def test_detects_cjk_dominant_text(self):
-        self.assertTrue(looks_like_chinese(["這是一個關於投資建議的中文句子，包含許多中文字元。"]))
-
-    def test_rejects_english_text(self):
-        self.assertFalse(looks_like_chinese(["This is a plain English sentence about investing."]))
-
-    def test_rejects_empty_input(self):
-        self.assertFalse(looks_like_chinese([]))
-        self.assertFalse(looks_like_chinese([""]))
-
-
-class EvaluateStereotypeChineseLexiconTests(TestCase):
-    def test_tokenizer_segments_chinese_and_keeps_unicode_words(self):
-        tokens = _merge_lexicon_tokens(
-            ["女", "士", "適合", "保守", "的", "投資", "組合", "。"],
-            ["女士", "保守"],
-        )
-
-        self.assertIn("女士", tokens)
-        self.assertIn("保守", tokens)
-        self.assertEqual(_chinese_safe_transform_token("保守。"), "保守")
-
-    def test_auto_detects_chinese_and_computes_association_and_cooccurrence(self):
-        # "保守"/"積極" (target adjectives) each co-occur with both "女士" and
-        # "男士" (gender words) across the corpus, so both word-list metrics
-        # have enough signal to return a real score instead of None.
-        responses = [
-            "女士適合保守的投資組合，重視穩健理財。",
-            "男士適合保守的投資組合，也重視積極理財。",
-            "女士通常偏好積極型基金以追求成長。",
-            "男士通常偏好積極型基金以追求成長。",
-        ]
-
-        result = LangFairMetricService().evaluate_stereotype(
-            responses=responses,
-            options={"metrics": ["Stereotype Association", "Cooccurrence Bias"]},
-        )
-
-        self.assertEqual(result["lexicon"], "chinese")
-        self.assertIsNotNone(result["metrics"]["Stereotype Association"])
-        self.assertIsNotNone(result["metrics"]["Cooccurrence Bias"])
-    def test_keeps_default_english_lexicon_for_english_responses(self):
-        responses = [
-            "The woman is a nurse who is very caring and gentle.",
-            "The man is a soldier who is very strong and brave.",
-        ]
-
-        result = LangFairMetricService().evaluate_stereotype(
-            responses=responses,
-            options={"metrics": ["Stereotype Association", "Cooccurrence Bias"]},
-        )
-
-        self.assertEqual(result["lexicon"], "default")
-
-    def test_explicit_use_chinese_lexicon_overrides_autodetection(self):
-        responses = ["The woman is a nurse."]
-
-        result = LangFairMetricService().evaluate_stereotype(
-            responses=responses,
-            options={
-                "metrics": ["Stereotype Association", "Cooccurrence Bias"],
-                "useChineseLexicon": True,
-            },
-        )
-
-        self.assertEqual(result["lexicon"], "chinese")
-
-    def test_accepts_custom_chinese_lexicon(self):
-        result = LangFairMetricService().evaluate_stereotype(
-            responses=[
-                "女性適合創新工作。",
-                "男性適合創新工作。",
-            ],
-            options={
-                "metrics": ["Stereotype Association", "Cooccurrence Bias"],
-                "chineseDemographicWordLists": {
-                    "female": ["女性"],
-                    "male": ["男性"],
-                },
-                "chineseStereotypeWordList": ["創新"],
-            },
-        )
-
-        self.assertEqual(result["lexicon"], "chinese")
-        self.assertIsNotNone(result["metrics"]["Stereotype Association"])
-        self.assertIsNotNone(result["metrics"]["Cooccurrence Bias"])
-
-
-class EvaluateCounterfactualChineseSentimentTests(TestCase):
-    @patch("apps.fairness.chinese_sentiment.XlmRobertaSentimentClassifier")
-    @patch("langfair.metrics.counterfactual.counterfactual.CounterfactualMetrics")
-    def test_uses_xlm_roberta_for_chinese_sentiment(self, metrics_class, classifier_class):
-        metrics_class.return_value.evaluate.return_value = {"metrics": {"Cosine": 0.9}}
-
-        result = LangFairMetricService().evaluate_counterfactual(
-            options={
-                "texts1": ["女性適合保守投資。"],
-                "texts2": ["男性適合積極投資。"],
-            }
-        )
-
-        classifier_class.assert_called_once_with(device="cpu")
-        self.assertEqual(len(metrics_class.call_args.kwargs["metrics"]), 4)
-        self.assertEqual(result["metrics"]["Cosine"], 0.9)

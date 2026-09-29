@@ -15,7 +15,9 @@ class RecommendationItemSerializer(serializers.Serializer):
 
 
 class EvaluationSerializer(serializers.ModelSerializer):
-    useCaseDescription = serializers.CharField(source="use_case_description")
+    useCaseDescription = serializers.CharField(
+        source="use_case_description", required=False, allow_blank=True
+    )
     taskType = serializers.ChoiceField(source="task_type", choices=Evaluation.TaskType.choices)
     language = serializers.ChoiceField(choices=Evaluation.Language.choices, required=False)
     classificationLabels = ClassificationLabelSerializer(
@@ -28,6 +30,7 @@ class EvaluationSerializer(serializers.ModelSerializer):
         many=True,
         required=False,
     )
+    taskObjectives = serializers.ListField(source="task_objectives", required=False)
     promptCount = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
     updatedAt = serializers.DateTimeField(source="updated_at", read_only=True)
@@ -42,6 +45,7 @@ class EvaluationSerializer(serializers.ModelSerializer):
             "language",
             "classificationLabels",
             "recommendationItems",
+            "taskObjectives",
             "status",
             "promptCount",
             "createdAt",
@@ -51,6 +55,10 @@ class EvaluationSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        if not attrs.get("use_case_description") and not attrs.get("task_objectives"):
+            raise serializers.ValidationError(
+                {"useCaseDescription": "This field is required unless task objectives are uploaded."}
+            )
         task_type = attrs.get("task_type") or getattr(self.instance, "task_type", None)
         labels = attrs.get("classification_labels")
         if task_type == Evaluation.TaskType.CLASSIFICATION:

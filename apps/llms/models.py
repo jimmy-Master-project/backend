@@ -11,6 +11,7 @@ class LLMConfig(models.Model):
     provider = models.CharField(max_length=64)
     model_name = models.CharField(max_length=128)
     base_url = models.CharField(max_length=255, blank=True, default="")
+    api_key = models.CharField(max_length=512, blank=True, default="")
     temperature = models.FloatField(default=0.7)
     top_p = models.FloatField(default=1.0)
     max_tokens = models.PositiveIntegerField(default=512)
