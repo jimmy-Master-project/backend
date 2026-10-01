@@ -9,6 +9,28 @@ from openai.types.chat import ChatCompletionMessageParam
 from .base import BaseLLMClient
 
 
+# Model ids that can't serve chat completions (official OpenAI lists them too).
+_NON_CHAT_MODEL_MARKERS = (
+    "embedding", "tts", "whisper", "dall-e", "davinci", "babbage", "moderation",
+    "image", "audio", "realtime", "transcribe", "search", "instruct", "computer-use", "codex",
+)
+
+
+def list_models(base_url=None, api_key=None, timeout=8):
+    """Return sorted chat-capable model ids from an OpenAI-style ``/models``."""
+    client = OpenAI(
+        base_url=base_url or settings.TARGET_LLM_BASE_URL or None,
+        api_key=api_key or settings.TARGET_LLM_API_KEY or "not-needed",
+        timeout=timeout,
+        max_retries=0,
+    )
+    ids = {model.id for model in client.models.list()}
+    return sorted(
+        model_id for model_id in ids
+        if not any(marker in model_id.lower() for marker in _NON_CHAT_MODEL_MARKERS)
+    )
+
+
 def _supports_custom_temperature(model_name: str) -> bool:
     return not model_name.lower().startswith("gpt-5")
 
