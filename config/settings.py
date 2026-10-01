@@ -125,7 +125,11 @@ PROMPT_AGENT_PROVIDER = os.environ.get("PROMPT_AGENT_PROVIDER", "openai_compatib
 TARGET_LLM_API_KEY = os.environ.get("TARGET_LLM_API_KEY", "")
 TARGET_LLM_BASE_URL = os.environ.get("TARGET_LLM_BASE_URL", "")
 TARGET_LLM_MODEL_NAME = os.environ.get("TARGET_LLM_MODEL_NAME", "")
-TARGET_LLM_PROVIDER = os.environ.get("TARGET_LLM_PROVIDER", "openai_compatible")
+TARGET_LLM_PROVIDER = os.environ.get("TARGET_LLM_PROVIDER", "openai")
+# Only OpenAI-style providers are supported; an old .env value (e.g. "custom")
+# must not become the default for new evaluations.
+if TARGET_LLM_PROVIDER not in ("openai", "openai_compatible"):
+    TARGET_LLM_PROVIDER = "openai"
 EXTERNAL_RESPONSE_API_KEY = os.environ.get("EXTERNAL_RESPONSE_API_KEY", "")
 try:
     TARGET_LLM_TIMEOUT_SECONDS = float(os.environ.get("TARGET_LLM_TIMEOUT_SECONDS", "120"))
