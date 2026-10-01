@@ -1,0 +1,255 @@
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false
+from datetime import timedelta
+from unittest.mock import Mock, patch
+
+from django.test import TestCase, override_settings
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from apps.evaluations.models import Evaluation
+from apps.llms.models import LLMConfig
+from apps.prompts.models import Prompt, PromptPopulation
+from apps.responses.models import LLMResponse
+
+from .models import EvaluationRun
+from .services import INTERRUPTED_MESSAGE, EvaluationRunService, _live_runs
+
+
+def _result(text="ok"):
+    return {"text": text, "input_tokens": 1, "output_tokens": 1, "latency_ms": 5}
+
+
+class RunTestMixin:
+    def setUp(self):
+        self.client = APIClient()
+        self.evaluation = Evaluation.objects.create(
+            name="Run tests",
+            use_case_description="Exercise run execution.",
+            task_type=Evaluation.TaskType.TEXT_GENERATION,
+        )
+        self.population = PromptPopulation.objects.create(
+            evaluation=self.evaluation,
+            provider="manual",
+            model_name="manual",
+            requested_prompt_count=3,
+            actual_prompt_count=3,
+            status=PromptPopulation.Status.COMPLETED,
+        )
+        self.prompts = [
+            Prompt.objects.create(
+                population=self.population, text=f"Prompt {sequence}", sequence=sequence
+            )
+            for sequence in (1, 2, 3)
+        ]
+        self.llm_config = LLMConfig.objects.create(
+            evaluation=self.evaluation,
+            provider="openai_compatible",
+            model_name="target-model",
+            generations_per_prompt=2,
+        )
+
+    def make_run(self, **kwargs):
+        defaults = {
+            "evaluation": self.evaluation,
+            "prompt_population": self.population,
+            "status": EvaluationRun.Status.RUNNING,
+            "total_prompts": 3,
+            "total_generations": 6,
+        }
+        defaults.update(kwargs)
+        return EvaluationRun.objects.create(**defaults)
+
+
+class EvaluationRunServiceTests(RunTestMixin, TestCase):
+    def execute(self, run, client):
+        with patch("apps.runs.services.build_llm_client", return_value=client):
+            EvaluationRunService()._execute(run.id, self.llm_config.id)
+        run.refresh_from_db()
+        return run
+
+    def test_resume_recomputes_progress_from_distinct_prompts(self):
+        run = self.make_run(status=EvaluationRun.Status.FAILED)
+        LLMResponse.objects.create(
+            run=run, prompt=self.prompts[0], generation_index=1, response_text="kept"
+        )
+        client = Mock()
+        client.generate.return_value = _result()
+
+        run = self.execute(run, client)
+
+        self.assertEqual(run.status, EvaluationRun.Status.COMPLETED)
+        self.assertEqual(client.generate.call_count, 5)
+        self.assertEqual(run.completed_generations, 6)
+        self.assertEqual(run.completed_prompts, 3)
+        self.assertEqual(run.responses.count(), 6)
+        self.assertIsNotNone(run.heartbeat_at)
+
+    def test_single_generation_failure_is_recorded_without_failing_run(self):
+        run = self.make_run()
+        client = Mock()
+        client.generate.side_effect = [
+            _result(), RuntimeError("timeout"), _result(), _result(), _result(), _result()
+        ]
+
+        with self.assertLogs("apps.runs.services", level="WARNING"):
+            run = self.execute(run, client)
+
+        self.assertEqual(run.status, EvaluationRun.Status.COMPLETED)
+        self.assertEqual(run.completed_generations, 5)
+        failed = run.responses.get(error__isnull=False)
+        self.assertEqual(failed.error, "timeout")
+        self.assertEqual(failed.response_text, "")
+        status_data = self.client.get(f"/api/runs/{run.id}/status/").data
+        self.assertEqual(status_data["failedGenerations"], 1)
+        self.assertEqual(
+            set(status_data),
+            {
+                "id", "status", "totalPrompts", "completedPrompts", "totalGenerations",
+                "completedGenerations", "failedGenerations", "progress", "errorMessage",
+                "external", "heartbeatAt",
+            },
+        )
+
+    def test_resume_retries_failed_generations(self):
+        run = self.make_run(status=EvaluationRun.Status.FAILED)
+        LLMResponse.objects.create(
+            run=run, prompt=self.prompts[0], generation_index=1, response_text="", error="boom"
+        )
+        client = Mock()
+        client.generate.return_value = _result("retried")
+
+        run = self.execute(run, client)
+
+        self.assertEqual(client.generate.call_count, 6)
+        row = run.responses.get(prompt=self.prompts[0], generation_index=1)
+        self.assertIsNone(row.error)
+        self.assertEqual(row.response_text, "retried")
+
+    @override_settings(TARGET_LLM_FAILFAST_GENERATIONS=3)
+    def test_systemic_failure_fails_the_run(self):
+        run = self.make_run()
+        client = Mock()
+        client.generate.side_effect = RuntimeError("connection refused")
+
+        with self.assertLogs("apps.runs.services", level="WARNING"):
+            run = self.execute(run, client)
+
+        self.assertEqual(run.status, EvaluationRun.Status.FAILED)
+        self.assertIn("connection refused", run.error_message)
+        self.assertEqual(client.generate.call_count, 3)
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.status, Evaluation.Status.FAILED)
+
+    @override_settings(TARGET_LLM_CONCURRENCY=3)
+    def test_concurrent_generation_stores_every_result(self):
+        run = self.make_run()
+        client = Mock()
+        client.generate.return_value = _result()
+
+        run = self.execute(run, client)
+
+        self.assertEqual(run.status, EvaluationRun.Status.COMPLETED)
+        self.assertEqual(run.completed_generations, 6)
+        self.assertEqual(run.responses.count(), 6)
+
+    def test_missing_run_is_logged_not_raised(self):
+        with self.assertLogs("apps.runs.services", level="ERROR"):
+            EvaluationRunService()._execute(999999, self.llm_config.id)
+
+
+class RunReapingTests(RunTestMixin, TestCase):
+    def test_orphaned_thread_run_is_marked_failed_on_status(self):
+        run = self.make_run(heartbeat_at=timezone.now() - timedelta(minutes=5))
+        self.evaluation.status = Evaluation.Status.RUNNING
+        self.evaluation.save(update_fields=["status"])
+
+        with self.assertLogs("apps.runs.services", level="WARNING"):
+            response = self.client.get(f"/api/runs/{run.id}/status/")
+
+        self.assertEqual(response.data["status"], EvaluationRun.Status.FAILED)
+        self.assertEqual(response.data["errorMessage"], INTERRUPTED_MESSAGE)
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.status, Evaluation.Status.FAILED)
+
+    def test_live_or_fresh_runs_are_not_reaped(self):
+        live = self.make_run(heartbeat_at=timezone.now() - timedelta(minutes=5))
+        _live_runs.add(live.id)
+        self.addCleanup(_live_runs.discard, live.id)
+        fresh = self.make_run()
+
+        for run in (live, fresh):
+            response = self.client.get(f"/api/runs/{run.id}/status/")
+            self.assertEqual(response.data["status"], EvaluationRun.Status.RUNNING)
+
+    def test_external_run_is_not_reaped_for_missing_thread(self):
+        run = self.make_run(external=True, heartbeat_at=timezone.now() - timedelta(hours=1))
+
+        response = self.client.get(f"/api/runs/{run.id}/status/")
+
+        self.assertEqual(response.data["status"], EvaluationRun.Status.RUNNING)
+
+    def test_stale_external_run_is_eventually_reaped(self):
+        run = self.make_run(external=True, heartbeat_at=timezone.now() - timedelta(days=2))
+
+        with self.assertLogs("apps.runs.services", level="WARNING"):
+            response = self.client.get(f"/api/runs/{run.id}/status/")
+
+        self.assertEqual(response.data["status"], EvaluationRun.Status.FAILED)
+
+
+@patch("apps.runs.views.EvaluationRunService.start")
+class StartRunViewTests(RunTestMixin, TestCase):
+    def url(self):
+        return f"/api/evaluations/{self.evaluation.id}/runs/"
+
+    def test_resume_failed_run(self, start):
+        run = self.make_run(status=EvaluationRun.Status.FAILED, error_message="boom")
+
+        response = self.client.post(self.url(), {"resumeRunId": run.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvaluationRun.Status.RUNNING)
+        self.assertEqual(run.error_message, "")
+        start.assert_called_once()
+
+    def test_resume_non_failed_run_conflicts(self, start):
+        run = self.make_run(status=EvaluationRun.Status.COMPLETED)
+
+        response = self.client.post(self.url(), {"resumeRunId": run.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertIn("error", response.data)
+        start.assert_not_called()
+
+    def test_start_while_run_in_progress_conflicts(self, start):
+        self.make_run()
+
+        response = self.client.post(self.url(), {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(
+            response.data["error"], "A run is already in progress for this evaluation."
+        )
+        start.assert_not_called()
+
+    def test_start_with_incomplete_population_is_rejected(self, start):
+        self.population.status = PromptPopulation.Status.GENERATING
+        self.population.save(update_fields=["status"])
+
+        response = self.client.post(
+            self.url(), {"promptPopulationId": self.population.id}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        start.assert_not_called()
+
+    def test_start_external_run_marks_it_external(self, start):
+        response = self.client.post(self.url(), {"external": True}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        run = EvaluationRun.objects.get(pk=response.data["id"])
+        self.assertTrue(run.external)
+        self.assertEqual(run.total_generations, 3)
+        start.assert_not_called()

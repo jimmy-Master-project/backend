@@ -1,7 +1,23 @@
+import threading
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from django.conf import settings
+
+# One pooled client per process: reuses TCP connections to MatrAIx instead of
+# opening a new connection per request. httpx.Client is thread-safe.
+_http_client: httpx.Client | None = None
+_http_client_lock = threading.Lock()
+
+
+def _get_http_client() -> httpx.Client:
+    global _http_client
+    if _http_client is None:
+        with _http_client_lock:
+            if _http_client is None:
+                _http_client = httpx.Client()
+    return _http_client
 
 
 class MatrAIxUnavailableError(Exception):
@@ -48,17 +64,17 @@ class MatrAIxClient:
         params = {"pool": pool or settings.MATRAIX_DEFAULT_PERSONA_POOL}
         return self._request(
             "GET",
-            f"/api/persona-pool/personas/{persona_id}",
+            f"/api/persona-pool/personas/{quote(str(persona_id), safe='')}",
             params=params,
         )
 
     def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         try:
-            response = httpx.request(method, url, timeout=self.timeout, **kwargs)
+            response = _get_http_client().request(method, url, timeout=self.timeout, **kwargs)
             response.raise_for_status()
             data = response.json()
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+        except httpx.HTTPError as exc:
             raise MatrAIxUnavailableError("Persona service is unavailable.") from exc
         except ValueError as exc:
             raise MatrAIxUnavailableError("Persona service returned invalid JSON.") from exc

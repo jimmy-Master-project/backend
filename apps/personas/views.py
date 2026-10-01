@@ -16,7 +16,10 @@ class PersonaAttributesView(APIView):
     def get(self, request):
         pool = request.query_params.get("pool") or settings.MATRAIX_DEFAULT_PERSONA_POOL
         try:
-            return Response(PersonaService().get_attributes(pool))
+            catalog = PersonaService().get_attributes(pool)
+            # The raw MatrAIx catalog is not forwarded: `attributes` is already
+            # the normalized list extracted from it.
+            return Response({"pool": catalog["pool"], "attributes": catalog["attributes"]})
         except MatrAIxUnavailableError:
             return Response(
                 {
@@ -58,8 +61,17 @@ class PersonaSampleView(APIView):
             {
                 "count": len(result["personas"]),
                 "pool": result["pool"],
-                "selected_attributes": result["selected_attributes"],
-                "personas": result["personas"],
+                "selectedAttributes": result["selected_attributes"],
+                "personas": [_serialize_persona(persona) for persona in result["personas"]],
                 "partial": result.get("partial", False),
             }
         )
+
+
+def _serialize_persona(persona):
+    return {
+        "personaId": persona["persona_id"],
+        # Keys are MatrAIx dimension names (data) and are passed through as-is.
+        "attributes": persona["attributes"],
+        "missingAttributes": persona["missing_attributes"],
+    }

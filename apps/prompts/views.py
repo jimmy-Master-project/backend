@@ -1,6 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportOptionalSubscript=false, reportIndexIssue=false, reportOptionalMemberAccess=false, reportMissingImports=false
 from typing import Any, cast
 
+from django.db.models import Max
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -10,8 +11,10 @@ from rest_framework.views import APIView
 from apps.evaluations.models import Evaluation
 
 from .models import Prompt, PromptPopulation
-from .services import PromptPopulationGenerationRunner
-from .services import get_task_objectives
+from services.casing import camelize_keys
+
+from .services import PromptPopulationGenerationRunner, get_task_objectives, reap_orphaned_populations
+from .services.generation import IN_PROGRESS_STATUSES
 from .serializers import (
     GeneratePromptPopulationSerializer,
     PromptCreateSerializer,
@@ -33,64 +36,121 @@ def _latest_population(evaluation):
     )
 
 
+def _next_sequence(population):
+    # count()+1 collides with an existing sequence after a prompt is deleted.
+    current = population.prompts.aggregate(max_sequence=Max("sequence"))["max_sequence"]
+    return (current or 0) + 1
+
+
 def _serialize_prompt(prompt):
+    metadata = prompt.metadata if isinstance(prompt.metadata, dict) else {}
+    fairness = metadata.get("fairness") if isinstance(metadata.get("fairness"), dict) else {}
     return {
         "id": str(prompt.id),
         "index": prompt.sequence,
-        "prompt": prompt.text,
         "text": prompt.text,
         "category": prompt.category,
-        "persona_id": prompt.metadata.get("persona_id"),
-        "persona_attributes": prompt.metadata.get("persona_attributes", {}),
-        "missing_attributes": prompt.metadata.get("missing_attributes", []),
-        "fairness": prompt.metadata.get("fairness", {}),
+        "personaId": metadata.get("persona_id"),
+        # Keys are persona attribute names (data) and are passed through as-is.
+        "personaAttributes": metadata.get("persona_attributes", {}),
+        "missingAttributes": metadata.get("missing_attributes", []),
+        "fairness": camelize_keys(fairness),
     }
 
 
-def _serialize_population_summary(population):
+def _serialize_persona_config(persona):
+    if not persona:
+        return None
+    return {
+        "enabled": bool(persona.get("enabled")),
+        "pool": persona.get("pool"),
+        "selectedAttributes": persona.get("selected_attributes", []),
+        # Keys are persona attribute names (data) and are passed through as-is.
+        "filters": persona.get("filters") or {},
+        "stratify": persona.get("stratify"),
+        "seed": persona.get("sampling_seed"),
+        "counterfactualEnabled": bool(persona.get("counterfactual_enabled")),
+        "uniquePersonaCount": persona.get("unique_persona_count"),
+        "reusedPersonas": bool(persona.get("reused_personas")),
+    }
+
+
+def _generating_population_id(evaluation):
+    population = (
+        evaluation.prompt_populations.filter(status__in=IN_PROGRESS_STATUSES)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    return population.id if population else None
+
+
+def _serialize_population_summary(population, generating_population_id=None):
+    summary = {
+        "populationId": None,
+        "status": None,
+        "errorMessage": "",
+        "generationModel": "",
+        "provider": "",
+        "temperature": 0,
+        "requested": 0,
+        "generated": 0,
+        "personaBased": False,
+        "persona": None,
+        "personaAttributes": [],
+        "stratifiedBy": None,
+        "seed": None,
+        "fairness": {},
+        # Newest population still being generated (may be newer than the one
+        # summarized here); lets a reloaded client resume polling it.
+        "generatingPopulationId": generating_population_id,
+    }
     if population is None:
-        return {
-            "generationModel": "",
-            "provider": "",
-            "temperature": 0,
-            "requested": 0,
-            "generated": 0,
-        }
+        return summary
     metadata = population.metadata if isinstance(population.metadata, dict) else {}
     persona = metadata.get("persona") if isinstance(metadata.get("persona"), dict) else {}
     fairness = metadata.get("fairness") if isinstance(metadata.get("fairness"), dict) else {}
-    return {
-        "generationModel": population.model_name,
-        "provider": population.provider,
-        "temperature": population.temperature,
-        "requested": population.requested_prompt_count,
-        "generated": population.actual_prompt_count,
-        "personaBased": bool(persona.get("enabled")),
-        "persona": persona or None,
-        "personaAttributes": persona.get("selected_attributes", []),
-        "stratifiedBy": persona.get("stratify"),
-        "seed": persona.get("sampling_seed"),
-        "fairness": fairness,
-    }
+    summary.update(
+        {
+            "populationId": population.id,
+            "status": population.status,
+            "errorMessage": population.error_message,
+            "generationModel": population.model_name,
+            "provider": population.provider,
+            "temperature": population.temperature,
+            "requested": population.requested_prompt_count,
+            "generated": population.actual_prompt_count,
+            "personaBased": bool(persona.get("enabled")),
+            "persona": _serialize_persona_config(persona),
+            "personaAttributes": persona.get("selected_attributes", []),
+            "stratifiedBy": persona.get("stratify"),
+            "seed": persona.get("sampling_seed"),
+            "fairness": camelize_keys(fairness),
+        }
+    )
+    return summary
 
 
 class GeneratePromptPopulationView(APIView):
     def post(self, request, evaluation_id=None):
+        # Validate parameters before touching the database so an invalid request
+        # never leaves an orphan Evaluation behind.
         if evaluation_id is None:
             task = (request.data.get("task") or "").strip()
             if not task:
                 return Response({"task": "This field is required."}, status=status.HTTP_400_BAD_REQUEST)
-            evaluation = Evaluation.objects.create(
-                name=task[:255],
-                use_case_description=task,
-                task_type=Evaluation.TaskType.TEXT_GENERATION,
-            )
         else:
             evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
 
         params = GeneratePromptPopulationSerializer(data=request.data)
         params.is_valid(raise_exception=True)
         data = cast(dict[str, Any], params.validated_data)
+
+        if evaluation_id is None:
+            evaluation = Evaluation.objects.create(
+                name=task[:255],
+                use_case_description=task,
+                task_type=Evaluation.TaskType.TEXT_GENERATION,
+            )
 
         objective_count = len(get_task_objectives(evaluation))
         persona = data.get("persona") or {}
@@ -122,26 +182,26 @@ class GeneratePromptPopulationView(APIView):
         # PromptPopulation.status via GET /prompt-populations/{id}/.
         PromptPopulationGenerationRunner().start(evaluation, data, population)
 
-        return Response(
-            {
-                "population_id": population.id,
-                "status": population.status,
-                "requested_prompt_count": population.requested_prompt_count,
-            },
-            status=status.HTTP_202_ACCEPTED,
-        )
+        return Response(PromptPopulationSerializer(population).data, status=status.HTTP_202_ACCEPTED)
 
 
 class PromptPopulationDetailView(APIView):
     def get(self, request, pk):
         population = get_object_or_404(PromptPopulation, pk=pk)
+        if reap_orphaned_populations(evaluation_id=population.evaluation_id):
+            population.refresh_from_db()
         return Response(PromptPopulationSerializer(population).data)
 
 
 class EvaluationPromptPopulationView(APIView):
     def get(self, request, evaluation_id):
         evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
-        return Response(_serialize_population_summary(_latest_population(evaluation)))
+        reap_orphaned_populations(evaluation_id=evaluation.id)
+        return Response(
+            _serialize_population_summary(
+                _latest_population(evaluation), _generating_population_id(evaluation)
+            )
+        )
 
 
 class EvaluationPromptListCreateView(APIView):
@@ -166,16 +226,16 @@ class EvaluationPromptListCreateView(APIView):
                 status=PromptPopulation.Status.COMPLETED,
             )
 
-        text = (request.data.get("prompt") or request.data.get("text") or "").strip()
+        text = (request.data.get("text") or "").strip()
         category = (request.data.get("category") or "").strip()
         if not text:
-            return Response({"prompt": "This field is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"text": "This field is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         prompt = Prompt.objects.create(
             population=population,
             text=text,
             category=category,
-            sequence=population.prompts.count() + 1,
+            sequence=_next_sequence(population),
             metadata={"source": "manual"},
         )
         population.actual_prompt_count = population.prompts.count()
@@ -187,8 +247,6 @@ class EvaluationPromptDetailView(APIView):
     def patch(self, request, evaluation_id, pk):
         evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
         prompt = get_object_or_404(Prompt, pk=pk, population__evaluation=evaluation)
-        if "prompt" in request.data:
-            prompt.text = request.data["prompt"]
         if "text" in request.data:
             prompt.text = request.data["text"]
         if "category" in request.data:
@@ -222,7 +280,7 @@ class PromptListCreateView(APIView):
         serializer = PromptCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        next_sequence = (population.prompts.count()) + 1
+        next_sequence = _next_sequence(population)
         prompt = Prompt.objects.create(
             population=population,
             text=serializer.validated_data["text"],

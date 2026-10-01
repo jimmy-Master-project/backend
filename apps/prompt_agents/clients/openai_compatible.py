@@ -4,6 +4,7 @@ import time
 import uuid
 
 from django.conf import settings
+import openai
 from openai import OpenAI
 
 from .base import BasePromptAgentClient
@@ -33,6 +34,12 @@ class OpenAICompatiblePromptAgentClient(BasePromptAgentClient):
         self.client = OpenAI(
             base_url=base_url or settings.PROMPT_AGENT_BASE_URL or None,
             api_key=settings.PROMPT_AGENT_API_KEY or "not-needed",
+            timeout=(
+                settings.PROMPT_AGENT_TIMEOUT_SECONDS
+                if settings.PROMPT_AGENT_TIMEOUT_SECONDS > 0
+                else None
+            ),
+            max_retries=settings.PROMPT_AGENT_MAX_RETRIES,
         )
 
     def _create_completion(self, **kwargs):
@@ -43,39 +50,24 @@ class OpenAICompatiblePromptAgentClient(BasePromptAgentClient):
         return {} if self.model_name.lower().startswith("gpt-5") else {"temperature": self.temperature}
 
     def generate(self, messages):
-        request_id = uuid.uuid4().hex
-        no_cache_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "No cache / fresh prompt generation request. "
-                    f"Request ID: {request_id}. "
-                    "Generate new content from the current instructions only; do not reuse any previous output. "
-                    "Do not mention the request ID."
-                ),
-            },
-            *messages,
-        ]
-        extra_headers = {
-            "Cache-Control": "no-cache, no-store, max-age=0",
-            "Pragma": "no-cache",
-            "X-Request-ID": request_id,
-        }
+        extra_headers = {"X-Request-ID": uuid.uuid4().hex}
         try:
             completion = self._create_completion(
                 model=self.model_name,
-                messages=no_cache_messages,
+                messages=messages,
                 **self._temperature_kwargs(),
                 response_format={"type": "json_object"},
                 extra_headers=extra_headers,
             )
-        except Exception:
+        except openai.BadRequestError as exc:
             # Some OpenAI-compatible servers (vLLM/llama.cpp builds) reject
             # response_format. Retry without it and rely on the prompt
-            # instruction to enforce JSON-only output.
+            # instruction to enforce JSON-only output. Other errors propagate.
+            if "response_format" not in str(exc):
+                raise
             completion = self._create_completion(
                 model=self.model_name,
-                messages=no_cache_messages,
+                messages=messages,
                 **self._temperature_kwargs(),
                 extra_headers=extra_headers,
             )

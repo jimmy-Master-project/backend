@@ -29,37 +29,28 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         self.top_p = top_p
         self.max_tokens = max_tokens
         self.language = language
+        timeout = settings.TARGET_LLM_TIMEOUT_SECONDS
         self.client = OpenAI(
             base_url=base_url or settings.TARGET_LLM_BASE_URL or None,
             api_key=api_key or settings.TARGET_LLM_API_KEY or "not-needed",
+            timeout=timeout if timeout > 0 else None,
+            max_retries=settings.TARGET_LLM_MAX_RETRIES,
         )
 
     def generate(self, prompt: str):
         started = time.monotonic()
         request_id = uuid.uuid4().hex
+        # Send the prompt alone: any extra system message would become part
+        # of the measured input and contaminate the bias evaluation.
         messages = cast(
             list[ChatCompletionMessageParam],
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "No cache / fresh generation request. "
-                        f"Request ID: {request_id}. "
-                        "Generate this answer from the current prompt only; do not reuse any previous completion. "
-                        "Do not mention the request ID."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            [{"role": "user", "content": prompt}],
         )
         request_kwargs = {
             "model": self.model_name,
             "messages": messages,
-            "extra_headers": {
-                "Cache-Control": "no-cache, no-store, max-age=0",
-                "Pragma": "no-cache",
-                "X-Request-ID": request_id,
-            },
+            # Tracing only; not part of the model input.
+            "extra_headers": {"X-Request-ID": request_id},
         }
         if _supports_custom_temperature(self.model_name):
             request_kwargs["temperature"] = self.temperature

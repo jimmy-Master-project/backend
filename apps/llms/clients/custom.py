@@ -5,6 +5,16 @@ from django.conf import settings
 
 from .base import BaseLLMClient
 
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+RETRY_BACKOFF_SECONDS = 1.0
+RETRY_BACKOFF_MAX_SECONDS = 30.0
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in RETRYABLE_STATUS_CODES
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
 
 class CustomLLMClient(BaseLLMClient):
     """POST a stable request shape to any external robot endpoint."""
@@ -34,16 +44,28 @@ class CustomLLMClient(BaseLLMClient):
             self.headers["Authorization"] = f"Bearer {api_key}"
 
     def generate(self, prompt: str):
-        started = time.monotonic()
         payload = {**self.payload, "prompt": prompt}
         timeout = settings.TARGET_LLM_TIMEOUT_SECONDS
-        response = httpx.post(
-            self.url,
-            json=payload,
-            headers=self.headers,
-            timeout=timeout if timeout > 0 else None,
-        )
-        response.raise_for_status()
+        max_retries = settings.TARGET_LLM_MAX_RETRIES
+        attempt = 0
+        while True:
+            # Latency covers the successful attempt only, not retries/backoff.
+            started = time.monotonic()
+            try:
+                response = httpx.post(
+                    self.url,
+                    json=payload,
+                    headers=self.headers,
+                    timeout=timeout if timeout > 0 else None,
+                )
+                response.raise_for_status()
+                break
+            except httpx.HTTPError as exc:
+                if attempt >= max_retries or not _is_retryable(exc):
+                    raise
+                # Exponential backoff: 1s, 2s, 4s, ... capped.
+                time.sleep(min(RETRY_BACKOFF_SECONDS * (2 ** attempt), RETRY_BACKOFF_MAX_SECONDS))
+                attempt += 1
         data = response.json()
         if isinstance(data, str):
             text = data

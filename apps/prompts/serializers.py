@@ -5,10 +5,13 @@ from .models import Prompt, PromptPopulation
 
 
 class PromptSerializer(serializers.ModelSerializer):
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+
     class Meta:
         model = Prompt
-        fields = ["id", "text", "category", "metadata", "sequence", "created_at"]
-        read_only_fields = ["id", "sequence", "created_at"]
+        # `metadata` is the raw internal (snake_case) JSON blob, exposed as-is.
+        fields = ["id", "text", "category", "metadata", "sequence", "createdAt"]
+        read_only_fields = ["id", "sequence"]
 
 
 class PromptCreateSerializer(serializers.ModelSerializer):
@@ -18,61 +21,74 @@ class PromptCreateSerializer(serializers.ModelSerializer):
 
 
 class PromptPopulationSerializer(serializers.ModelSerializer):
-    evaluation_id = serializers.IntegerField(source="evaluation.id", read_only=True)
+    evaluationId = serializers.IntegerField(source="evaluation.id", read_only=True)
+    modelName = serializers.CharField(source="model_name", read_only=True)
+    requestedPromptCount = serializers.IntegerField(source="requested_prompt_count", read_only=True)
+    actualPromptCount = serializers.IntegerField(source="actual_prompt_count", read_only=True)
+    additionalInstruction = serializers.CharField(source="additional_instruction", read_only=True)
+    errorMessage = serializers.CharField(source="error_message", read_only=True)
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
 
     class Meta:
         model = PromptPopulation
+        # `metadata` is the raw internal (snake_case) JSON blob, exposed as-is.
         fields = [
             "id",
-            "evaluation_id",
+            "evaluationId",
             "name",
             "provider",
-            "model_name",
+            "modelName",
             "temperature",
-            "requested_prompt_count",
-            "actual_prompt_count",
-            "additional_instruction",
+            "requestedPromptCount",
+            "actualPromptCount",
+            "additionalInstruction",
             "metadata",
             "status",
-            "error_message",
-            "created_at",
+            "errorMessage",
+            "createdAt",
         ]
-        read_only_fields = fields
+        read_only_fields = ["id", "name", "provider", "temperature", "metadata", "status"]
+
+
+# Upper bound per objective (x2 for counterfactual pairs); each prompt costs an LLM call.
+MAX_PROMPT_COUNT = 500
+
+
+class PersonaConfigSerializer(serializers.Serializer):
+    """camelCase request body -> snake_case validated data (as stored in metadata)."""
+
+    enabled = serializers.BooleanField(default=False)
+    pool = serializers.CharField(required=False, allow_blank=True)
+    selectedAttributes = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, source="selected_attributes"
+    )
+    # Keys are persona attribute names (data), not field names.
+    filters = serializers.DictField(required=False, default=dict)
+    stratify = serializers.JSONField(required=False, allow_null=True, default=None)
+    seed = serializers.IntegerField(required=False, allow_null=True, default=None)
+    counterfactualEnabled = serializers.BooleanField(
+        required=False, default=False, source="counterfactual_enabled"
+    )
 
 
 class GeneratePromptPopulationSerializer(serializers.Serializer):
     provider = serializers.CharField(required=False, allow_blank=True, default="")
-    model = serializers.CharField(required=False, allow_blank=True, default="")
-    model_name = serializers.CharField(required=False, allow_blank=True, default="")
-    base_url = serializers.CharField(required=False, allow_blank=True, default="")
+    modelName = serializers.CharField(required=False, allow_blank=True, default="", source="model_name")
+    baseUrl = serializers.CharField(required=False, allow_blank=True, default="", source="base_url")
     task = serializers.CharField(required=False, allow_blank=True, default="")
-    population_size = serializers.IntegerField(required=False, min_value=1)
-    promptCount = serializers.IntegerField(required=False, min_value=1)
-    prompt_count = serializers.IntegerField(required=False, min_value=1)
+    promptCount = serializers.IntegerField(min_value=1, max_value=MAX_PROMPT_COUNT, source="prompt_count")
     temperature = serializers.FloatField(required=False, default=0.8)
-    additionalInstructions = serializers.CharField(
-        required=False, allow_blank=True, default=""
+    additionalInstruction = serializers.CharField(
+        required=False, allow_blank=True, default="", source="additional_instruction"
     )
-    additional_instruction = serializers.CharField(
-        required=False, allow_blank=True, default=""
-    )
-    persona = serializers.DictField(required=False, default=dict)
+    persona = PersonaConfigSerializer(required=False)
 
     def validate(self, attrs):
         attrs["provider"] = attrs.get("provider") or settings.PROMPT_AGENT_PROVIDER
-        attrs["model_name"] = (
-            attrs.get("model_name") or attrs.get("model") or settings.PROMPT_AGENT_MODEL_NAME
-        )
-        attrs["prompt_count"] = (
-            attrs.get("prompt_count") or attrs.get("promptCount") or attrs.get("population_size")
-        )
-        attrs["additional_instruction"] = (
-            attrs.get("additional_instruction") or attrs.get("additionalInstructions") or ""
-        )
+        attrs["model_name"] = attrs.get("model_name") or settings.PROMPT_AGENT_MODEL_NAME
+        attrs["persona"] = dict(attrs.get("persona") or {})
         if not attrs["model_name"]:
             raise serializers.ValidationError(
-                {"model_name": "This field is required unless PROMPT_AGENT_MODEL_NAME is set."}
+                {"modelName": "This field is required unless PROMPT_AGENT_MODEL_NAME is set."}
             )
-        if not attrs["prompt_count"]:
-            raise serializers.ValidationError({"prompt_count": "This field is required."})
         return attrs

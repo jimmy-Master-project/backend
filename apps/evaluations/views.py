@@ -17,14 +17,14 @@ class EvaluationListCreateView(ListCreateAPIView):
         # Convert multipart QueryDict to a plain dict before inserting the
         # parsed list; assigning a list directly to QueryDict adds one nesting level.
         data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
-        upload = request.FILES.get("task_file")
+        upload = request.FILES.get("taskFile")
         if upload:
             try:
                 data["taskObjectives"] = parse_task_file(upload)
                 if not data.get("useCaseDescription"):
                     data["useCaseDescription"] = "Uploaded task objectives"
             except TaskInputError as exc:
-                return Response({"task_file": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"taskFile": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)

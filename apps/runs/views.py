@@ -1,7 +1,9 @@
 from typing import Any, cast
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -12,7 +14,7 @@ from apps.prompts.models import PromptPopulation
 
 from .models import EvaluationRun
 from .serializers import RunStatusSerializer, StartRunSerializer
-from .services import EvaluationRunService
+from .services import ACTIVE_STATUSES, EvaluationRunService, reap_orphaned_runs
 
 
 class StartRunView(APIView):
@@ -27,17 +29,24 @@ class StartRunView(APIView):
         prompt_population_id = validated_data.get("prompt_population_id")
         external = validated_data["external"]
 
+        # Runs left RUNNING by a server restart become FAILED (resumable) here.
+        reap_orphaned_runs(evaluation_id=evaluation.id)
+
         if resume_run_id is not None:
             run = get_object_or_404(
                 EvaluationRun,
                 pk=resume_run_id,
                 evaluation=evaluation,
-                status=EvaluationRun.Status.FAILED,
             )
-            if external:
+            if external or run.external:
                 return Response(
                     {"error": "Failed external runs cannot be resumed here."},
                     status=status.HTTP_400_BAD_REQUEST,
+                )
+            if run.status != EvaluationRun.Status.FAILED:
+                return Response(
+                    {"error": "Only failed runs can be resumed."},
+                    status=status.HTTP_409_CONFLICT,
                 )
             try:
                 llm_config = evaluation.llm_config
@@ -58,14 +67,28 @@ class StartRunView(APIView):
                     {"error": "The saved run uses a different generations-per-prompt setting."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            run.status = EvaluationRun.Status.RUNNING
-            run.error_message = ""
-            run.finished_at = None
-            run.save(update_fields=["status", "error_message", "finished_at"])
-            evaluation.status = Evaluation.Status.RUNNING
-            evaluation.save(update_fields=["status", "updated_at"])
+            with transaction.atomic():
+                if self._has_active_run(evaluation):
+                    return self._active_run_conflict()
+                # Atomic FAILED -> RUNNING transition: concurrent resumes start one thread.
+                claimed = EvaluationRun.objects.filter(
+                    pk=run.pk, status=EvaluationRun.Status.FAILED
+                ).update(
+                    status=EvaluationRun.Status.RUNNING,
+                    error_message="",
+                    finished_at=None,
+                    heartbeat_at=timezone.now(),
+                )
+                if not claimed:
+                    return Response(
+                        {"error": "This run is no longer failed; it may already have been resumed."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                evaluation.status = Evaluation.Status.RUNNING
+                evaluation.save(update_fields=["status", "updated_at"])
+            run.refresh_from_db()
             EvaluationRunService().start(run, llm_config)
-            return Response({"run_id": run.id, "status": run.status}, status=status.HTTP_201_CREATED)
+            return Response(RunStatusSerializer(run).data, status=status.HTTP_201_CREATED)
 
         if prompt_population_id is not None:
             population = get_object_or_404(
@@ -73,6 +96,16 @@ class StartRunView(APIView):
                 pk=prompt_population_id,
                 evaluation=evaluation,
             )
+            if population.status != PromptPopulation.Status.COMPLETED:
+                return Response(
+                    {"error": "The prompt population has not completed generation."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not population.actual_prompt_count:
+                return Response(
+                    {"error": "The prompt population has no prompts."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         else:
             population = evaluation.prompt_populations.filter(
                 status=PromptPopulation.Status.COMPLETED,
@@ -98,37 +131,55 @@ class StartRunView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        run = evaluation.runs.create(
-            prompt_population=population,
-            status=EvaluationRun.Status.RUNNING,
-            total_prompts=population.actual_prompt_count,
-            total_generations=(
-                population.actual_prompt_count
-                * (llm_config.generations_per_prompt if llm_config else 1)
-            ),
-        )
+        # Check + create in one write transaction so two concurrent starts
+        # cannot both create a run (SQLite transaction_mode is IMMEDIATE).
+        with transaction.atomic():
+            if self._has_active_run(evaluation):
+                return self._active_run_conflict()
 
-        evaluation.status = Evaluation.Status.RUNNING
-        evaluation.save(update_fields=["status", "updated_at"])
+            run = evaluation.runs.create(
+                prompt_population=population,
+                status=EvaluationRun.Status.RUNNING,
+                external=external,
+                total_prompts=population.actual_prompt_count,
+                total_generations=(
+                    population.actual_prompt_count
+                    * (llm_config.generations_per_prompt if llm_config else 1)
+                ),
+            )
+
+            evaluation.status = Evaluation.Status.RUNNING
+            evaluation.save(update_fields=["status", "updated_at"])
 
         if not external:
             EvaluationRunService().start(run, llm_config)
 
+        return Response(RunStatusSerializer(run).data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _has_active_run(evaluation):
+        return evaluation.runs.filter(status__in=ACTIVE_STATUSES).exists()
+
+    @staticmethod
+    def _active_run_conflict():
         return Response(
-            {"run_id": run.id, "status": run.status},
-            status=status.HTTP_201_CREATED,
+            {"error": "A run is already in progress for this evaluation."},
+            status=status.HTTP_409_CONFLICT,
         )
 
 
 class RunStatusView(APIView):
     def get(self, request, run_id):
         run = get_object_or_404(EvaluationRun, pk=run_id)
+        if reap_orphaned_runs(evaluation_id=run.evaluation_id):
+            run.refresh_from_db()
         return Response(RunStatusSerializer(run).data)
 
 
 class LatestRunStatusView(APIView):
     def get(self, request, evaluation_id):
         evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
+        reap_orphaned_runs(evaluation_id=evaluation.id)
         run = evaluation.runs.first()
         if run is None:
             return Response({"detail": "No runs found."}, status=status.HTTP_404_NOT_FOUND)

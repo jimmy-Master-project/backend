@@ -17,3 +17,10 @@ class LangFairRunMetricsSerializer(serializers.Serializer):
         allow_empty=False,
     )
     options = serializers.JSONField(required=False)
+
+    def validate_options(self, value):
+        if value in (None, ""):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("options must be an object.")
+        return value

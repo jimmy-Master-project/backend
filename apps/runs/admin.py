@@ -16,7 +16,9 @@ class EvaluationRunAdmin(admin.ModelAdmin):
         "total_generations",
         "started_at",
         "finished_at",
+        "heartbeat_at",
+        "external",
     )
-    list_filter = ("status",)
+    list_filter = ("status", "external")
     search_fields = ("evaluation__name", "error_message")
-    readonly_fields = ("started_at", "finished_at")
+    readonly_fields = ("started_at", "finished_at", "heartbeat_at")

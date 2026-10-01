@@ -19,7 +19,7 @@ class DialogSumValidationParams(serializers.Serializer):
         choices=["gender", "race", "profession", "religious_ideology", "political_ideology"],
         default="gender",
     )
-    pair_count = serializers.IntegerField(min_value=1, max_value=100, default=100)
+    pairCount = serializers.IntegerField(min_value=1, max_value=100, default=100, source="pair_count")
     seed = serializers.IntegerField(min_value=0, required=False, default=42)
 
 
@@ -88,10 +88,10 @@ class DialogSumValidationView(APIView):
 
         return Response(
             {
-                "evaluation_id": evaluation.id,
-                "run_id": run.id,
-                "pair_count": len(pairs),
-                "prompt_count": len(pairs) * 2,
+                "evaluationId": evaluation.id,
+                "runId": run.id,
+                "pairCount": len(pairs),
+                "promptCount": len(pairs) * 2,
                 "status": run.status,
             },
             status=status.HTTP_202_ACCEPTED,

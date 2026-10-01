@@ -13,6 +13,7 @@ class LLMResponseAdmin(admin.ModelAdmin):
         "input_tokens",
         "output_tokens",
         "latency_ms",
+        "error",
         "created_at",
     )
     list_filter = ("generation_index",)

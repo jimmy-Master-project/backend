@@ -77,6 +77,15 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        "OPTIONS": {
+            # Wait for a competing writer instead of failing immediately with
+            # "database is locked" (background run threads write concurrently).
+            "timeout": 30,
+            # Take the write lock at BEGIN so read->write upgrades inside
+            # atomic() blocks cannot deadlock (Django >= 5.1).
+            "transaction_mode": "IMMEDIATE",
+            "init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+        },
     }
 }
 
@@ -119,9 +128,47 @@ TARGET_LLM_MODEL_NAME = os.environ.get("TARGET_LLM_MODEL_NAME", "")
 TARGET_LLM_PROVIDER = os.environ.get("TARGET_LLM_PROVIDER", "openai_compatible")
 EXTERNAL_RESPONSE_API_KEY = os.environ.get("EXTERNAL_RESPONSE_API_KEY", "")
 try:
-    TARGET_LLM_TIMEOUT_SECONDS = float(os.environ.get("TARGET_LLM_TIMEOUT_SECONDS", "420"))
+    TARGET_LLM_TIMEOUT_SECONDS = float(os.environ.get("TARGET_LLM_TIMEOUT_SECONDS", "120"))
 except (TypeError, ValueError):
     TARGET_LLM_TIMEOUT_SECONDS = 120.0
+try:
+    # Retries after the first attempt (timeouts, 429, 5xx, connection errors).
+    TARGET_LLM_MAX_RETRIES = max(int(os.environ.get("TARGET_LLM_MAX_RETRIES", "2")), 0)
+except (TypeError, ValueError):
+    TARGET_LLM_MAX_RETRIES = 2
+try:
+    # Parallel target LLM calls per run; 1 keeps calls strictly sequential.
+    TARGET_LLM_CONCURRENCY = max(int(os.environ.get("TARGET_LLM_CONCURRENCY", "1")), 1)
+except (TypeError, ValueError):
+    TARGET_LLM_CONCURRENCY = 1
+try:
+    # A run fails as a whole when the first N generations it attempts all fail
+    # (e.g. wrong base URL / model). Later isolated failures are only recorded.
+    TARGET_LLM_FAILFAST_GENERATIONS = max(
+        int(os.environ.get("TARGET_LLM_FAILFAST_GENERATIONS", "5")), 1
+    )
+except (TypeError, ValueError):
+    TARGET_LLM_FAILFAST_GENERATIONS = 5
+try:
+    # External-bot runs have no worker thread; mark them failed only after
+    # this many hours without any POSTed responses.
+    EXTERNAL_RUN_STALE_HOURS = float(os.environ.get("EXTERNAL_RUN_STALE_HOURS", "24"))
+except (TypeError, ValueError):
+    EXTERNAL_RUN_STALE_HOURS = 24.0
+
+# The prompt agent reuses the target LLM network limits unless overridden.
+try:
+    PROMPT_AGENT_TIMEOUT_SECONDS = float(
+        os.environ.get("PROMPT_AGENT_TIMEOUT_SECONDS", str(TARGET_LLM_TIMEOUT_SECONDS))
+    )
+except (TypeError, ValueError):
+    PROMPT_AGENT_TIMEOUT_SECONDS = TARGET_LLM_TIMEOUT_SECONDS
+try:
+    PROMPT_AGENT_MAX_RETRIES = max(
+        int(os.environ.get("PROMPT_AGENT_MAX_RETRIES", str(TARGET_LLM_MAX_RETRIES))), 0
+    )
+except (TypeError, ValueError):
+    PROMPT_AGENT_MAX_RETRIES = TARGET_LLM_MAX_RETRIES
 
 # Default language used by LangFair model selection. The frontend may override
 # this per evaluation; supported values are "en" and "auto".
@@ -143,3 +190,26 @@ try:
     )
 except (TypeError, ValueError):
     MATRAIX_CONNECT_TIMEOUT_SECONDS = 3.0
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "simple"},
+    },
+    "loggers": {
+        "apps": {
+            "handlers": ["console"],
+            "level": os.environ.get("APP_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+        "services": {
+            "handlers": ["console"],
+            "level": os.environ.get("APP_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+}

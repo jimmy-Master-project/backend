@@ -11,17 +11,25 @@ class ResponsePromptSerializer(serializers.Serializer):
 
 class LLMResponseSerializer(serializers.ModelSerializer):
     prompt = ResponsePromptSerializer()
+    generationIndex = serializers.IntegerField(source="generation_index")
+    responseText = serializers.CharField(source="response_text")
+    inputTokens = serializers.IntegerField(source="input_tokens", allow_null=True)
+    outputTokens = serializers.IntegerField(source="output_tokens", allow_null=True)
+    latencyMs = serializers.IntegerField(source="latency_ms", allow_null=True)
+    createdAt = serializers.DateTimeField(source="created_at")
+
     class Meta:
         model = LLMResponse
         fields = [
             "id",
             "prompt",
-            "generation_index",
-            "response_text",
-            "input_tokens",
-            "output_tokens",
-            "latency_ms",
-            "created_at",
+            "generationIndex",
+            "responseText",
+            "inputTokens",
+            "outputTokens",
+            "latencyMs",
+            "error",
+            "createdAt",
         ]
 
 

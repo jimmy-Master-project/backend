@@ -98,8 +98,8 @@ class PersonaApiTests(TestCase):
         response = self.client.post(
             "/api/persona/sample",
             {
-                "sample_size": 1,
-                "selected_attributes": ["gender"],
+                "sampleSize": 1,
+                "selectedAttributes": ["gender"],
                 "filters": {},
                 "stratify": None,
             },
@@ -109,6 +109,9 @@ class PersonaApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["personas"][0]["attributes"], {"gender": "Female"})
+        self.assertEqual(response.data["personas"][0]["personaId"], "0042")
+        self.assertEqual(response.data["personas"][0]["missingAttributes"], [])
+        self.assertEqual(response.data["selectedAttributes"], ["gender"])
 
     @patch("apps.personas.views.PersonaService")
     def test_attributes_api_handles_matraix_unavailable(self, service_cls):
@@ -153,8 +156,8 @@ class PersonaPromptPopulationTests(TestCase):
         )
 
     @override_settings(PROMPT_AGENT_PROVIDER="openai_compatible", PROMPT_AGENT_MODEL_NAME="agent-model")
-    @patch("apps.prompts.services.PromptGenerationService")
-    @patch("apps.prompts.services.PersonaService")
+    @patch("apps.prompts.services.generation.PromptGenerationService")
+    @patch("apps.prompts.services.generation.PersonaService")
     def test_generate_population_with_personas_stores_reproducibility_metadata(
         self,
         persona_service_cls,
@@ -192,11 +195,11 @@ class PersonaPromptPopulationTests(TestCase):
         response = self.client.post(
             f"/api/evaluations/{self.evaluation.id}/prompt-populations/generate",
             {
-                "population_size": 1,
+                "promptCount": 1,
                 "persona": {
                     "enabled": True,
                     "pool": "persona/datasets/matraix-persona-dev-sample",
-                    "selected_attributes": ["age_bracket", "risk_tolerance"],
+                    "selectedAttributes": ["age_bracket", "risk_tolerance"],
                     "filters": {},
                     "stratify": None,
                     "seed": 123,
@@ -206,7 +209,7 @@ class PersonaPromptPopulationTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
-        population = PromptPopulation.objects.get(pk=response.data["population_id"])
+        population = PromptPopulation.objects.get(pk=response.data["id"])
         prompt = Prompt.objects.get(population=population)
         self.assertEqual(population.metadata["persona"]["sampling_seed"], 123)
         self.assertEqual(population.metadata["prompt_generator"]["mode"], "persona_conditioned_generation")
@@ -215,8 +218,8 @@ class PersonaPromptPopulationTests(TestCase):
         self.assertEqual(prompt.metadata["persona_attributes"]["risk_tolerance"], "medium")
 
     @override_settings(PROMPT_AGENT_PROVIDER="openai_compatible", PROMPT_AGENT_MODEL_NAME="agent-model")
-    @patch("apps.prompts.services.PromptGenerationService")
-    @patch("apps.prompts.services.PersonaService")
+    @patch("apps.prompts.services.generation.PromptGenerationService")
+    @patch("apps.prompts.services.generation.PersonaService")
     def test_generate_population_reuses_partial_persona_sample(
         self,
         persona_service_cls,
@@ -253,10 +256,10 @@ class PersonaPromptPopulationTests(TestCase):
         response = self.client.post(
             f"/api/evaluations/{self.evaluation.id}/prompt-populations/generate",
             {
-                "population_size": 3,
+                "promptCount": 3,
                 "persona": {
                     "enabled": True,
-                    "selected_attributes": ["age_bracket"],
+                    "selectedAttributes": ["age_bracket"],
                     "seed": 123,
                 },
             },
@@ -264,7 +267,7 @@ class PersonaPromptPopulationTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
-        population = PromptPopulation.objects.get(pk=response.data["population_id"])
+        population = PromptPopulation.objects.get(pk=response.data["id"])
         self.assertEqual(population.actual_prompt_count, 3)
         self.assertEqual(population.metadata["persona"]["unique_persona_count"], 1)
         self.assertTrue(population.metadata["persona"]["reused_personas"])
@@ -276,8 +279,8 @@ class PersonaPromptPopulationTests(TestCase):
         self.assertEqual(generate_kwargs["personas"][2]["sample_instance"], 3)
 
     @override_settings(PROMPT_AGENT_PROVIDER="openai_compatible", PROMPT_AGENT_MODEL_NAME="agent-model")
-    @patch("apps.prompts.services.PromptGenerationService")
-    @patch("apps.prompts.services.PersonaService")
+    @patch("apps.prompts.services.generation.PromptGenerationService")
+    @patch("apps.prompts.services.generation.PersonaService")
     def test_persona_generation_does_not_store_expected_labels(
         self,
         persona_service_cls,
@@ -318,10 +321,10 @@ class PersonaPromptPopulationTests(TestCase):
         response = self.client.post(
             f"/api/evaluations/{self.evaluation.id}/prompt-populations/generate",
             {
-                "population_size": 1,
+                "promptCount": 1,
                 "persona": {
                     "enabled": True,
-                    "selected_attributes": ["age_bracket"],
+                    "selectedAttributes": ["age_bracket"],
                     "seed": 123,
                 },
             },
@@ -329,15 +332,15 @@ class PersonaPromptPopulationTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
-        prompt = Prompt.objects.get(population_id=response.data["population_id"])
+        prompt = Prompt.objects.get(population_id=response.data["id"])
         self.assertNotIn("expected_label", prompt.metadata)
         prompt_service_cls.return_value.generate_for_personas.assert_called_once()
         kwargs = prompt_service_cls.return_value.generate_for_personas.call_args.kwargs
         self.assertNotIn("desired_labels", kwargs)
 
     @override_settings(PROMPT_AGENT_PROVIDER="openai_compatible", PROMPT_AGENT_MODEL_NAME="agent-model")
-    @patch("apps.prompts.services.PromptGenerationService")
-    @patch("apps.prompts.services.PersonaService")
+    @patch("apps.prompts.services.generation.PromptGenerationService")
+    @patch("apps.prompts.services.generation.PersonaService")
     def test_generate_population_with_gender_builds_word_swap_counterfactual_pairs(
         self,
         persona_service_cls,
@@ -374,10 +377,10 @@ class PersonaPromptPopulationTests(TestCase):
         response = self.client.post(
             f"/api/evaluations/{self.evaluation.id}/prompt-populations/generate",
             {
-                "population_size": 1,
+                "promptCount": 1,
                 "persona": {
                     "enabled": True,
-                    "selected_attributes": ["gender_identity", "age_bracket"],
+                    "selectedAttributes": ["gender_identity", "age_bracket"],
                     "seed": 123,
                 },
             },
@@ -385,7 +388,7 @@ class PersonaPromptPopulationTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
-        population = PromptPopulation.objects.get(pk=response.data["population_id"])
+        population = PromptPopulation.objects.get(pk=response.data["id"])
         self.assertEqual(population.actual_prompt_count, 2)
         self.assertEqual(
             population.metadata["prompt_generator"]["mode"], "persona_counterfactual_word_swap"
