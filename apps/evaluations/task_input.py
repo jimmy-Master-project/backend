@@ -61,16 +61,30 @@ def _read_xlsx(raw: bytes):
         if sheet is None:
             raise TaskInputError("The XLSX file has no worksheet.")
         target = rel_map[sheet.attrib["{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"]]
-        path = posixpath.normpath(posixpath.join("xl", target))
+        # Relationship targets are usually relative to xl/, but some writers
+        # (e.g. openpyxl) emit package-absolute paths like /xl/worksheets/...
+        if target.startswith("/"):
+            path = posixpath.normpath(target.lstrip("/"))
+        else:
+            path = posixpath.normpath(posixpath.join("xl", target))
         root = ElementTree.fromstring(archive.read(path))
         rows = []
         for row in root.findall(".//{*}row"):
             cells = []
             for cell in row.findall("{*}c"):
-                value = cell.find("{*}v")
-                text = "" if value is None else value.text or ""
-                if cell.attrib.get("t") == "s" and text:
-                    text = shared[int(text)]
+                if cell.attrib.get("t") == "inlineStr":
+                    inline = cell.find("{*}is")
+                    text = "" if inline is None else "".join(inline.itertext())
+                else:
+                    value = cell.find("{*}v")
+                    text = "" if value is None else value.text or ""
+                    if cell.attrib.get("t") == "s" and text:
+                        text = shared[int(text)]
+                # Empty cells are omitted from the XML; place values by their
+                # column reference so later columns don't shift left.
+                column = _column_index(cell.attrib.get("r", ""))
+                if column is not None and column > len(cells):
+                    cells.extend([""] * (column - len(cells)))
                 cells.append(text)
             if cells:
                 rows.append(cells)
@@ -79,3 +93,13 @@ def _read_xlsx(raw: bytes):
         headers = [re.sub(r"\s+", "", str(v).lower()) for v in rows[0]]
         index = next((headers.index(key) for key in ("objective", "task", "target", "description", "任務目標") if key in headers), 0)
         return [{"objective": row[index] if index < len(row) else ""} for row in rows[1:]]
+
+
+def _column_index(reference: str) -> int | None:
+    letters = re.match(r"[A-Z]+", reference.upper())
+    if not letters:
+        return None
+    index = 0
+    for char in letters.group():
+        index = index * 26 + ord(char) - ord("A") + 1
+    return index - 1

@@ -1,4 +1,6 @@
 # pyright: reportAttributeAccessIssue=false
+import json
+
 from django.db import connection
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.response import Response
@@ -7,6 +9,8 @@ from rest_framework import status
 from .models import Evaluation
 from .serializers import EvaluationSerializer
 from .task_input import TaskInputError, parse_task_file
+
+MULTIPART_JSON_FIELDS = ("classificationLabels", "recommendationItems", "taskObjectives")
 
 
 class EvaluationListCreateView(ListCreateAPIView):
@@ -17,6 +21,17 @@ class EvaluationListCreateView(ListCreateAPIView):
         # Convert multipart QueryDict to a plain dict before inserting the
         # parsed list; assigning a list directly to QueryDict adds one nesting level.
         data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
+        if hasattr(request.data, "dict"):
+            # Multipart forms can only carry strings; the frontend JSON-encodes
+            # list fields (labels, candidate items) alongside the task file.
+            for key in MULTIPART_JSON_FIELDS:
+                if isinstance(data.get(key), str):
+                    try:
+                        data[key] = json.loads(data[key])
+                    except json.JSONDecodeError:
+                        return Response(
+                            {key: "Must be a JSON array."}, status=status.HTTP_400_BAD_REQUEST
+                        )
         upload = request.FILES.get("taskFile")
         if upload:
             try:
