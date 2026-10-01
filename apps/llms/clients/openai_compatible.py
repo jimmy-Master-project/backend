@@ -20,7 +20,7 @@ def list_models(base_url=None, api_key=None, timeout=8):
     """Return sorted chat-capable model ids from an OpenAI-style ``/models``."""
     client = OpenAI(
         base_url=base_url or settings.TARGET_LLM_BASE_URL or None,
-        api_key=api_key or settings.TARGET_LLM_API_KEY or "not-needed",
+        api_key=(settings.TARGET_LLM_API_KEY if api_key is None else api_key) or "not-needed",
         timeout=timeout,
         max_retries=0,
     )
@@ -54,7 +54,7 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         timeout = settings.TARGET_LLM_TIMEOUT_SECONDS
         self.client = OpenAI(
             base_url=base_url or settings.TARGET_LLM_BASE_URL or None,
-            api_key=api_key or settings.TARGET_LLM_API_KEY or "not-needed",
+            api_key=(settings.TARGET_LLM_API_KEY if api_key is None else api_key) or "not-needed",
             timeout=timeout if timeout > 0 else None,
             max_retries=settings.TARGET_LLM_MAX_RETRIES,
         )

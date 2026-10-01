@@ -179,6 +179,6 @@ X-API-Key: your-shared-key
 
 ## 備註
 
-- `provider` 只支援 `openai`（`https://api.openai.com/v1`）與 `openai_compatible`（vLLM、llama.cpp 等 OpenAI 相容服務），其他值會回 400。外部聊天機器人請改用 external run 搭配 `POST /api/runs/{id}/responses/` 回傳答案。
+- `provider` 支援 `openai`（`https://api.openai.com/v1`）、`evaair`（長榮聊天機器人，經由專案根目錄的 `evaair-bot` 服務，預設 `http://127.0.0.1:8768/v1`）與 `openai_compatible`（vLLM、llama.cpp 等 OpenAI 相容服務），其他值會回 400。三者都走 OpenAI SDK。
 - Prompt Generation 與 Target LLM 呼叫都使用 OpenAI SDK 的 `base_url` 參數指向自架 endpoint。
 - EvaluationRun 用背景 thread 執行（非 Celery），符合 MVP 範圍；前端可用 `GET /api/runs/{id}/status/` 輪詢進度。

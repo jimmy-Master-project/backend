@@ -106,7 +106,9 @@ class LLMModelListView(APIView):
         api_key = request.data.get("apiKey") or ""
         if not api_key:
             stored = LLMConfig.objects.filter(evaluation=evaluation).first()
-            api_key = (stored.api_key if stored else "") or settings.TARGET_LLM_API_KEY
+            api_key = (stored.api_key if stored else "") or (
+                "" if provider == "evaair" else settings.TARGET_LLM_API_KEY
+            )
         try:
             models = list_models(base_url=base_url, api_key=api_key)
         except Exception as exc:

@@ -128,7 +128,7 @@ TARGET_LLM_MODEL_NAME = os.environ.get("TARGET_LLM_MODEL_NAME", "")
 TARGET_LLM_PROVIDER = os.environ.get("TARGET_LLM_PROVIDER", "openai")
 # Only OpenAI-style providers are supported; an old .env value (e.g. "custom")
 # must not become the default for new evaluations.
-if TARGET_LLM_PROVIDER not in ("openai", "openai_compatible"):
+if TARGET_LLM_PROVIDER not in ("openai", "openai_compatible", "evaair"):
     TARGET_LLM_PROVIDER = "openai"
 EXTERNAL_RESPONSE_API_KEY = os.environ.get("EXTERNAL_RESPONSE_API_KEY", "")
 try:

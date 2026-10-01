@@ -251,5 +251,6 @@ class StartRunViewTests(RunTestMixin, TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         run = EvaluationRun.objects.get(pk=response.data["id"])
         self.assertTrue(run.external)
-        self.assertEqual(run.total_generations, 3)
+        # 3 prompts × generationsPerPrompt=2 from the evaluation's llm_config.
+        self.assertEqual(run.total_generations, 6)
         start.assert_not_called()

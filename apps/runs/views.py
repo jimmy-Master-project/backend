@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.evaluations.models import Evaluation
+from apps.llms.models import LLMConfig
 from apps.llms.views import build_default_llm_config
 from apps.prompts.models import PromptPopulation
 
@@ -118,7 +119,9 @@ class StartRunView(APIView):
                 )
 
         if external:
-            llm_config = None
+            # External bots are not called through llm_config, but its
+            # generationsPerPrompt still decides how many answers each prompt needs.
+            llm_config = LLMConfig.objects.filter(evaluation=evaluation).first()
         else:
             try:
                 llm_config = evaluation.llm_config
