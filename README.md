@@ -179,7 +179,6 @@ X-API-Key: your-shared-key
 
 ## 備註
 
-- `provider` 目前只實作 `openai_compatible`（同時涵蓋 OpenAI cloud endpoint、vLLM、llama.cpp 等相容服務），對應 spec 第一版建議。
-- `provider=custom` 時，`baseUrl` 會被當成外部機器人的 POST URL。請求格式為 `{"prompt":"...","model":"...","temperature":0.7,"top_p":1.0,"max_tokens":512}`；回應可為純文字，或 JSON 的 `text`、`response`、`output`、`message.content` 欄位。`apiKey` 會以 Bearer token 放入請求，且不會由 GET API 回傳。
+- `provider` 只支援 `openai`（`https://api.openai.com/v1`）與 `openai_compatible`（vLLM、llama.cpp 等 OpenAI 相容服務），其他值會回 400。外部聊天機器人請改用 external run 搭配 `POST /api/runs/{id}/responses/` 回傳答案。
 - Prompt Generation 與 Target LLM 呼叫都使用 OpenAI SDK 的 `base_url` 參數指向自架 endpoint。
 - EvaluationRun 用背景 thread 執行（非 Celery），符合 MVP 範圍；前端可用 `GET /api/runs/{id}/status/` 輪詢進度。

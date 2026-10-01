@@ -1,12 +1,10 @@
 from django.conf import settings
 
 from .openai_compatible import OpenAICompatibleLLMClient
-from .custom import CustomLLMClient
 
 CLIENTS = {
     "openai_compatible": OpenAICompatibleLLMClient,
     "openai": OpenAICompatibleLLMClient,
-    "custom": CustomLLMClient,
 }
 
 

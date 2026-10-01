@@ -1,6 +1,7 @@
 from django.conf import settings
 from rest_framework import serializers
 
+from .clients.factory import CLIENTS
 from .models import LLMConfig
 
 
@@ -44,11 +45,14 @@ class LLMConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"modelName": "This field is required unless TARGET_LLM_MODEL_NAME is set."}
             )
-        if attrs.get("provider", getattr(self.instance, "provider", None)) == "custom" and not attrs["base_url"]:
-            raise serializers.ValidationError(
-                {"baseUrl": "This field is required for the custom provider."}
-            )
         return attrs
+
+    def validate_provider(self, value):
+        if value not in CLIENTS:
+            raise serializers.ValidationError(
+                f"Unsupported provider. Choose one of: {', '.join(CLIENTS)}."
+            )
+        return value
 
     def update(self, instance, validated_data):
         # An omitted write-only key means "keep the existing credential".

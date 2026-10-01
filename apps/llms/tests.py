@@ -2,65 +2,8 @@ from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, override_settings
 
-import httpx
-
-from .clients.custom import CustomLLMClient
 from .clients.openai_compatible import OpenAICompatibleLLMClient
-
-
-class CustomLLMClientTests(SimpleTestCase):
-    @override_settings(TARGET_LLM_TIMEOUT_SECONDS=7)
-    @patch("apps.llms.clients.custom.httpx.post")
-    def test_posts_stable_payload_and_reads_response(self, post):
-        response = Mock()
-        response.json.return_value = {"response": "hello"}
-        post.return_value = response
-
-        result = CustomLLMClient(
-            model_name="robot-v1",
-            base_url="https://robot.example/generate",
-            api_key="secret",
-        ).generate("say hello")
-
-        post.assert_called_once()
-        request = post.call_args.kwargs
-        self.assertEqual(request["json"]["prompt"], "say hello")
-        self.assertEqual(request["json"]["model"], "robot-v1")
-        self.assertEqual(request["headers"]["Authorization"], "Bearer secret")
-        self.assertEqual(request["timeout"], 7)
-        self.assertEqual(result["text"], "hello")
-
-    @override_settings(TARGET_LLM_MAX_RETRIES=2)
-    @patch("apps.llms.clients.custom.time.sleep")
-    @patch("apps.llms.clients.custom.httpx.post")
-    def test_retries_transient_errors_with_backoff(self, post, sleep):
-        request = httpx.Request("POST", "https://robot.example/generate")
-        busy = httpx.Response(503, request=request)
-        ok = Mock()
-        ok.json.return_value = {"text": "hello"}
-        post.side_effect = [httpx.ReadTimeout("slow", request=request), busy, ok]
-
-        result = CustomLLMClient(
-            model_name="robot-v1", base_url="https://robot.example/generate"
-        ).generate("say hello")
-
-        self.assertEqual(result["text"], "hello")
-        self.assertEqual(post.call_count, 3)
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.0, 2.0])
-
-    @override_settings(TARGET_LLM_MAX_RETRIES=2)
-    @patch("apps.llms.clients.custom.time.sleep")
-    @patch("apps.llms.clients.custom.httpx.post")
-    def test_does_not_retry_client_errors(self, post, sleep):
-        request = httpx.Request("POST", "https://robot.example/generate")
-        post.return_value = httpx.Response(400, request=request)
-
-        with self.assertRaises(httpx.HTTPStatusError):
-            CustomLLMClient(
-                model_name="robot-v1", base_url="https://robot.example/generate"
-            ).generate("say hello")
-        self.assertEqual(post.call_count, 1)
-        sleep.assert_not_called()
+from .serializers import LLMConfigSerializer
 
 
 class OpenAICompatibleLLMClientTests(SimpleTestCase):
@@ -82,3 +25,18 @@ class OpenAICompatibleLLMClientTests(SimpleTestCase):
         self.assertEqual(kwargs["messages"], [{"role": "user", "content": "the prompt"}])
         self.assertNotIn("Cache-Control", kwargs["extra_headers"])
         self.assertNotIn("Pragma", kwargs["extra_headers"])
+
+
+class LLMConfigSerializerProviderTests(SimpleTestCase):
+    def test_accepts_openai_providers(self):
+        for provider in ("openai", "openai_compatible"):
+            with self.subTest(provider=provider):
+                serializer = LLMConfigSerializer(data={"provider": provider, "modelName": "gpt-4o-mini"})
+                self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_rejects_other_providers(self):
+        for provider in ("custom", "gemini"):
+            with self.subTest(provider=provider):
+                serializer = LLMConfigSerializer(data={"provider": provider, "modelName": "x"})
+                self.assertFalse(serializer.is_valid())
+                self.assertIn("provider", serializer.errors)
