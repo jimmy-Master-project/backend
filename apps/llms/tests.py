@@ -33,7 +33,7 @@ class OpenAICompatibleLLMClientTests(SimpleTestCase):
 
 class LLMConfigSerializerProviderTests(SimpleTestCase):
     def test_accepts_openai_providers(self):
-        for provider in ("openai", "openai_compatible", "evaair"):
+        for provider in ("openai", "openai_compatible", "evaair", "virgin"):
             with self.subTest(provider=provider):
                 serializer = LLMConfigSerializer(data={"provider": provider, "modelName": "gpt-4o-mini"})
                 self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -110,3 +110,18 @@ class EvaAirProviderTests(APITestCase):
         )
         self.assertEqual(response.data["models"], ["evaair"])
         self.assertEqual(openai_cls.call_args.kwargs["api_key"], "not-needed")
+
+    @override_settings(TARGET_LLM_API_KEY="sk-openai")
+    @patch("apps.llms.clients.openai_compatible.OpenAI")
+    def test_virgin_never_receives_the_openai_key(self, openai_cls):
+        from .clients.factory import build_llm_client
+
+        evaluation = Evaluation.objects.create(
+            name="v", use_case_description="d", task_type=Evaluation.TaskType.TEXT_GENERATION
+        )
+        config = LLMConfig.objects.create(
+            evaluation=evaluation, provider="virgin", model_name="virgin", base_url="http://127.0.0.1:8769/virgin/v1"
+        )
+        build_llm_client(config)
+        self.assertEqual(openai_cls.call_args.kwargs["api_key"], "not-needed")
+        self.assertEqual(openai_cls.call_args.kwargs["base_url"], "http://127.0.0.1:8769/virgin/v1")

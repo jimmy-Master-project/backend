@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from apps.evaluations.models import Evaluation
 
-from .clients.factory import CLIENTS, build_llm_client
+from .clients.factory import CLIENTS, KEYLESS_PROVIDERS, build_llm_client
 from .clients.openai_compatible import list_models
 from .models import LLMConfig
 from .serializers import LLMConfigSerializer
@@ -107,7 +107,7 @@ class LLMModelListView(APIView):
         if not api_key:
             stored = LLMConfig.objects.filter(evaluation=evaluation).first()
             api_key = (stored.api_key if stored else "") or (
-                "" if provider == "evaair" else settings.TARGET_LLM_API_KEY
+                "" if provider in KEYLESS_PROVIDERS else settings.TARGET_LLM_API_KEY
             )
         try:
             models = list_models(base_url=base_url, api_key=api_key)
