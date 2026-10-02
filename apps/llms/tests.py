@@ -33,7 +33,7 @@ class OpenAICompatibleLLMClientTests(SimpleTestCase):
 
 class LLMConfigSerializerProviderTests(SimpleTestCase):
     def test_accepts_openai_providers(self):
-        for provider in ("openai", "openai_compatible", "evaair", "virgin"):
+        for provider in ("openai", "openai_compatible", "evaair", "virgin", "priceline"):
             with self.subTest(provider=provider):
                 serializer = LLMConfigSerializer(data={"provider": provider, "modelName": "gpt-4o-mini"})
                 self.assertTrue(serializer.is_valid(), serializer.errors)
