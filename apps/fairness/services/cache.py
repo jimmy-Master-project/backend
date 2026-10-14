@@ -14,8 +14,14 @@ from apps.fairness.models import LangFairMetricResult
 from .utils import _to_jsonable
 
 # Bump whenever computation logic changes in a way that invalidates old rows
-# (2: pairs keyed by objective + generation_index; error responses excluded).
-METRICS_SCHEMA_VERSION = 2
+# (2: pairs keyed by objective + generation_index; error responses excluded;
+#  3: non-English refusal, group gaps, CIs, noise baselines, normalized SERP/PRAG;
+#  4: a non-English run is refused for every suite, not only the text ones;
+#  5: counterfactual CIs cluster-bootstrapped by prompt pair, baseline gap;
+#  6: group comparisons keyed by LangFair attribute (gender, race);
+#  7: toxicity / stereotype classifiers score sentence by sentence;
+#  8: stereotype classifier scores chunks of whole sentences instead).
+METRICS_SCHEMA_VERSION = 8
 DEFAULT_KEEP_PER_RUN = 5
 
 

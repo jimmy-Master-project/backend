@@ -44,7 +44,18 @@ def _serialize_response_item(response, model_name=""):
 class EvaluationResponseListView(APIView):
     def get(self, request, evaluation_id):
         evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
-        run = evaluation.runs.order_by("-id").first()
+        # ?runId= shows an earlier run (e.g. before the Target LLM was swapped);
+        # without it the latest run is shown.
+        requested_run_id = request.query_params.get("runId")
+        if requested_run_id:
+            if not requested_run_id.isdigit():
+                return Response(
+                    {"error": "runId must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            run = get_object_or_404(evaluation.runs, pk=int(requested_run_id))
+        else:
+            run = evaluation.runs.order_by("-id").first()
         if run is None:
             return Response({
                 "items": [],
@@ -92,7 +103,11 @@ class EvaluationResponseListView(APIView):
         start = (page - 1) * page_size
         end = start + page_size
 
-        model_name = getattr(getattr(evaluation, "llm_config", None), "model_name", "")
+        # The model this run actually used; the evaluation's current config may
+        # have been swapped since. Runs from before snapshots fall back to it.
+        model_name = (run.llm_snapshot or {}).get("modelName") or getattr(
+            getattr(evaluation, "llm_config", None), "model_name", ""
+        )
         items = [_serialize_response_item(response, model_name) for response in queryset[start:end]]
 
         return Response(
@@ -102,6 +117,7 @@ class EvaluationResponseListView(APIView):
                 "model": model_name,
                 "promptCount": run.prompt_population.actual_prompt_count,
                 "runId": run.id,
+                "runLabel": run.label,
                 "taskType": evaluation.task_type,
                 "language": evaluation.language,
                 "classificationLabels": evaluation.get_classification_labels(),
@@ -187,6 +203,13 @@ class RunResponseListView(APIView):
                 run.evaluation.status = Evaluation.Status.COMPLETED
                 run.evaluation.save(update_fields=["status", "updated_at"])
             run.save(update_fields=update_fields)
+
+        # The last POST completed the run: start the default metric computation
+        # (unless this request computes metrics itself below).
+        if run.status == EvaluationRun.Status.COMPLETED and not data["calculate"]:
+            from apps.fairness.services.auto import compute_metrics_for_completed_run
+
+            compute_metrics_for_completed_run(run.id)
 
         result = {
             "stored": len(written),

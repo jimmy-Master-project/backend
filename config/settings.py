@@ -41,7 +41,6 @@ INSTALLED_APPS = [
     "apps.responses",
     "apps.fairness",
     "apps.personas",
-    "apps.benchmark",
 ]
 
 MIDDLEWARE = [
@@ -153,6 +152,8 @@ try:
     )
 except (TypeError, ValueError):
     TARGET_LLM_FAILFAST_GENERATIONS = 5
+# Start the default LangFair computation as soon as a run completes.
+FAIRNESS_AUTO_COMPUTE = os.environ.get("FAIRNESS_AUTO_COMPUTE", "1").lower() not in {"0", "false", "no"}
 try:
     # External-bot runs have no worker thread; mark them failed only after
     # this many hours without any POSTed responses.

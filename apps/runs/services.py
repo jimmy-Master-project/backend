@@ -254,6 +254,10 @@ class EvaluationRunService:
         if completed:
             run.evaluation.status = run.evaluation.Status.COMPLETED
             run.evaluation.save(update_fields=["status", "updated_at"])
+            # Fairness metrics start computing right away (in the background).
+            from apps.fairness.services.auto import compute_metrics_for_completed_run
+
+            compute_metrics_for_completed_run(run.id)
         if failed:
             logger.warning(
                 "Run %s finished with %s failed generation(s) out of %s attempted",

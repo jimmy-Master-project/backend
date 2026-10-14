@@ -107,7 +107,8 @@ class EvaluationRunServiceTests(RunTestMixin, TestCase):
             {
                 "id", "status", "totalPrompts", "completedPrompts", "totalGenerations",
                 "completedGenerations", "failedGenerations", "progress", "errorMessage",
-                "external", "heartbeatAt",
+                "external", "heartbeatAt", "startedAt", "finishedAt", "label",
+                "llmSnapshot", "promptPopulationId",
             },
         )
 
@@ -254,3 +255,57 @@ class StartRunViewTests(RunTestMixin, TestCase):
         # 3 prompts × generationsPerPrompt=2 from the evaluation's llm_config.
         self.assertEqual(run.total_generations, 6)
         start.assert_not_called()
+
+    def test_start_records_llm_snapshot_and_label(self, start):
+        self.llm_config.api_key = "secret"
+        self.llm_config.save(update_fields=["api_key"])
+
+        response = self.client.post(self.url(), {"label": "  gpt run  "}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["label"], "gpt run")
+        snapshot = response.data["llmSnapshot"]
+        self.assertEqual(snapshot["modelName"], "target-model")
+        self.assertEqual(snapshot["generationsPerPrompt"], 2)
+        self.assertNotIn("secret", str(snapshot))
+
+        # Changing the evaluation's config later does not rewrite history.
+        self.llm_config.model_name = "other-model"
+        self.llm_config.save(update_fields=["model_name"])
+        run = EvaluationRun.objects.get(pk=response.data["id"])
+        self.assertEqual(run.llm_snapshot["modelName"], "target-model")
+
+    def test_list_runs_newest_first(self, start):
+        older = self.make_run(status=EvaluationRun.Status.COMPLETED)
+        newer = self.make_run(status=EvaluationRun.Status.FAILED)
+        LLMResponse.objects.create(
+            run=newer, prompt=self.prompts[0], generation_index=1, response_text="", error="boom"
+        )
+
+        response = self.client.get(self.url())
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["id"] for item in response.data], [newer.id, older.id])
+        self.assertEqual(response.data[0]["failedGenerations"], 1)
+        self.assertEqual(response.data[1]["failedGenerations"], 0)
+
+    def test_rename_and_delete_run(self, start):
+        run = self.make_run(status=EvaluationRun.Status.COMPLETED)
+        LLMResponse.objects.create(run=run, prompt=self.prompts[0], generation_index=1, response_text="ok")
+
+        renamed = self.client.patch(f"/api/runs/{run.id}/", {"label": "baseline"}, format="json")
+        self.assertEqual(renamed.status_code, status.HTTP_200_OK)
+        self.assertEqual(renamed.data["label"], "baseline")
+
+        deleted = self.client.delete(f"/api/runs/{run.id}/")
+        self.assertEqual(deleted.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(EvaluationRun.objects.filter(pk=run.id).exists())
+        self.assertFalse(LLMResponse.objects.filter(run_id=run.id).exists())
+
+    def test_active_run_cannot_be_deleted(self, start):
+        run = self.make_run()
+
+        response = self.client.delete(f"/api/runs/{run.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertTrue(EvaluationRun.objects.filter(pk=run.id).exists())

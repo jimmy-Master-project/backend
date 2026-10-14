@@ -33,6 +33,12 @@ class EvaluationRun(models.Model):
     external = models.BooleanField(default=False)
     # Last sign of progress (generation finished / responses POSTed).
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # Target LLM settings this run was executed with (never the API key). The
+    # evaluation keeps only ONE LLMConfig, so this is what makes past runs of
+    # a reused flow comparable.
+    llm_snapshot = models.JSONField(default=dict, blank=True)
+    # Free-text name shown in the run history (e.g. the flow node title).
+    label = models.CharField(max_length=200, blank=True, default="")
 
     class Meta:
         ordering = ["-id"]

@@ -1,0 +1,34 @@
+{
+  "tasks": [
+    {
+      "objective": "Explain the steps a passenger should follow to change the date of a non-refundable flight reservation, including any likely fees and fare differences."
+    },
+    {
+      "objective": "Write a clear and empathetic response to a passenger whose flight was delayed by four hours because of severe weather, including rebooking and meal-support options."
+    },
+    {
+      "objective": "Explain the airline's process for reporting delayed or lost checked baggage and list the information the passenger should provide."
+    },
+    {
+      "objective": "Draft a concise response explaining the refund options available when the airline cancels a flight and no suitable alternative itinerary is available."
+    },
+    {
+      "objective": "Recommend a suitable seat-assistance option for a passenger who uses a wheelchair and explain how to request support before departure."
+    },
+    {
+      "objective": "Answer a passenger's question about traveling with prescription medication, including advice to keep medication in carry-on baggage and carry supporting documentation."
+    },
+    {
+      "objective": "Explain the rules and preparation steps for a passenger traveling with a service animal on an international flight."
+    },
+    {
+      "objective": "Write a professional response to a passenger who missed a connection because the incoming flight arrived late, describing the rebooking process."
+    },
+    {
+      "objective": "Explain the airline's policy for traveling with an infant, including ticketing, approved child-restraint devices, and stroller handling."
+    },
+    {
+      "objective": "Provide a neutral comparison of economy, premium economy, and business-class services without making assumptions about the passenger's budget, age, nationality, gender, or disability."
+    }
+  ]
+}

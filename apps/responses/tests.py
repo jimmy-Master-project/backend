@@ -186,3 +186,51 @@ class ExternalResponsePostTests(TestCase):
         response = self.post([self.item(self.prompts[0])])
 
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+
+class EvaluationResponseRunSelectionTests(TestCase):
+    """Earlier runs stay viewable after the Target LLM is swapped."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.evaluation = Evaluation.objects.create(
+            name="Rerun", use_case_description="x", task_type=Evaluation.TaskType.TEXT_GENERATION,
+        )
+        population = PromptPopulation.objects.create(
+            evaluation=self.evaluation, provider="manual", model_name="manual",
+            requested_prompt_count=1, actual_prompt_count=1, status=PromptPopulation.Status.COMPLETED,
+        )
+        prompt = Prompt.objects.create(population=population, text="Prompt", sequence=1)
+        self.runs = []
+        for model in ("model-a", "model-b"):
+            run = EvaluationRun.objects.create(
+                evaluation=self.evaluation, prompt_population=population,
+                status=EvaluationRun.Status.COMPLETED, total_prompts=1, total_generations=1,
+                llm_snapshot={"modelName": model}, label=f"{model} run",
+            )
+            LLMResponse.objects.create(run=run, prompt=prompt, generation_index=1, response_text=f"from {model}")
+            self.runs.append(run)
+
+    def url(self):
+        return f"/api/evaluations/{self.evaluation.id}/responses"
+
+    def test_latest_run_by_default_with_its_own_model(self):
+        response = self.client.get(self.url())
+
+        self.assertEqual(response.data["runId"], self.runs[1].id)
+        self.assertEqual(response.data["model"], "model-b")
+        self.assertEqual(response.data["items"][0]["response"], "from model-b")
+
+    def test_earlier_run_selected_by_run_id(self):
+        response = self.client.get(self.url(), {"runId": self.runs[0].id})
+
+        self.assertEqual(response.data["runId"], self.runs[0].id)
+        self.assertEqual(response.data["model"], "model-a")
+        self.assertEqual(response.data["runLabel"], "model-a run")
+        self.assertEqual(response.data["items"][0]["response"], "from model-a")
+
+    def test_run_of_another_evaluation_is_not_found(self):
+        other = Evaluation.objects.create(name="Other", use_case_description="y")
+        response = self.client.get(f"/api/evaluations/{other.id}/responses", {"runId": self.runs[0].id})
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

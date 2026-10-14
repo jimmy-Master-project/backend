@@ -6,7 +6,26 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from ..utils import _missing_input, _missing_keys, _safe_int, extract_protected_group
+from ..stats import bootstrap_interval, mean_with_ci
+from ..utils import (
+    PAIR_ROLES,
+    _missing_input,
+    _missing_keys,
+    _safe_int,
+    extract_protected_group,
+    fairness_metadata,
+    pair_key,
+    prompt_text,
+)
+
+GAP_RATE_NAMES = {
+    "predictedPositiveRate": "Predicted Positive Rate",
+    "falseNegativeRate": "False Negative Rate",
+    "falsePositiveRate": "False Positive Rate",
+    "falseDiscoveryRate": "False Discovery Rate",
+    "falseOmissionRate": "False Omission Rate",
+}
+FLIP_RATE_NAME = "Decision Flip Rate"
 
 
 def evaluate_classification(options: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -61,14 +80,106 @@ def evaluate_classification_for_run(
     metric_opts = {**opts, **extracted["inputs"]}
     metrics = evaluate(options=metric_opts)
     status_value = metrics.get("status") if isinstance(metrics, Mapping) else None
-    return {
+    inputs = extracted["inputs"]
+    result = {
         "status": status_value or "ok",
-        "inputs": extracted["inputs"],
+        "inputs": inputs,
         "classificationLabels": extracted["classificationLabels"],
         "mapping": extracted["mapping"],
         "extractionFailures": extracted["extractionFailures"],
         "diagnostics": extracted.get("diagnostics", {}),
         "metrics": metrics,
+    }
+    gap = build_group_rate_gaps(inputs["groups"], inputs["yPred"], inputs.get("yTrue"))
+    if gap is not None:
+        result["groupGap"] = gap
+    paired = build_paired_decision_summary(extracted.get("pairedDecisions") or {})
+    if paired is not None:
+        result["pairedDecisions"] = paired
+    return result
+
+
+def _rates(units: Sequence[tuple[int, int | None]]) -> dict[str, Any]:
+    counts = _empty_confusion_counts()
+    for pred, actual in units:
+        if actual is not None:
+            _add_confusion_observation(counts, pred, actual)
+    rates = _with_confusion_rates(counts)
+    rates["predictedPositiveRate"] = _safe_rate(sum(1 for pred, _ in units if pred == 1), len(units))
+    return rates
+
+
+def build_group_rate_gaps(
+    groups: Sequence[str], y_pred: Sequence[int], y_true: Sequence[int] | None
+) -> dict[str, Any] | None:
+    """Signed between-group differences of each rate, with bootstrap CIs.
+
+    LangFair's parity metrics report |r1 - r2| with no uncertainty; with a few
+    dozen responses per group a gap of a few points is often just noise, so
+    responses are resampled within each group to get a 95% CI of r1 - r2.
+    """
+    group_names = sorted({str(group) for group in groups})
+    if len(group_names) != 2:
+        return None
+    actuals = list(y_true) if y_true is not None and len(y_true) == len(y_pred) else [None] * len(y_pred)
+    strata = [
+        [(int(pred), actual) for group, pred, actual in zip(groups, y_pred, actuals, strict=True) if str(group) == name]
+        for name in group_names
+    ]
+    rate_keys = list(GAP_RATE_NAMES) if y_true is not None and None not in actuals else ["predictedPositiveRate"]
+
+    def gap(key: str, sample: Sequence[Sequence[tuple[int, int | None]]]) -> float | None:
+        first, second = (_rates(units)[key] for units in sample)
+        return None if first is None or second is None else first - second
+
+    metrics: dict[str, Any] = {}
+    intervals: dict[str, Any] = {}
+    for key in rate_keys:
+        name = GAP_RATE_NAMES[key]
+        metrics[name] = gap(key, strata)
+        interval = bootstrap_interval(strata, lambda sample, key=key: gap(key, sample))
+        if interval is not None:
+            intervals[name] = interval
+    return {
+        "groups": group_names,
+        "comparison": f"{group_names[0]} - {group_names[1]}",
+        "metrics": metrics,
+        "confidenceIntervals": intervals,
+    }
+
+
+def build_paired_decision_summary(paired: Mapping[Any, Mapping[str, int]]) -> dict[str, Any] | None:
+    """How often the decision changes when only the protected attribute changes.
+
+    Uses the counterfactual pairs directly (same prompt, attribute swapped),
+    which is far more sensitive than comparing group-level rates. The exact
+    McNemar test checks whether flips favour one group more than chance.
+    """
+    complete = [decisions for decisions in paired.values() if len(decisions) == 2]
+    group_names = sorted({group for decisions in complete for group in decisions})
+    if not complete or len(group_names) != 2:
+        return None
+    group_a, group_b = group_names
+    pairs = [(decisions[group_a], decisions[group_b]) for decisions in complete if set(decisions) == set(group_names)]
+    if not pairs:
+        return None
+    flips = [int(first != second) for first, second in pairs]
+    positive_only_a = sum(1 for first, second in pairs if first == 1 and second == 0)
+    positive_only_b = sum(1 for first, second in pairs if first == 0 and second == 1)
+    discordant = positive_only_a + positive_only_b
+    p_value = 1.0
+    if discordant:
+        from scipy.stats import binomtest
+
+        p_value = float(binomtest(positive_only_a, discordant, 0.5).pvalue)
+    return {
+        "groups": group_names,
+        "pairCount": len(pairs),
+        "flipCount": sum(flips),
+        "metrics": {FLIP_RATE_NAME: sum(flips) / len(flips)},
+        "confidenceIntervals": {FLIP_RATE_NAME: mean_with_ci(flips)},
+        "positiveOnlyFor": {group_a: positive_only_a, group_b: positive_only_b},
+        "mcnemarExactPValue": p_value,
     }
 
 
@@ -128,6 +239,8 @@ def build_classification_metric_inputs(
     y_true: list[int] = []
     has_expected_labels = True
     failures: list[dict[str, Any]] = []
+    paired: dict[Any, dict[str, int]] = {}
+    pair_prompts: dict[Any, set[str | None]] = {}
 
     for response in response_rows:
         group = extract_protected_group(response)
@@ -140,6 +253,11 @@ def build_classification_metric_inputs(
             expected_label = extract_expected_classification_label(response)
             groups.append(group)
             y_pred.append(1 if decision in positive_values else 0)
+            fairness = fairness_metadata(response)
+            if fairness and fairness.get("pair_id") and fairness.get("role") in PAIR_ROLES:
+                key = pair_key(response, fairness, fairness["pair_id"])
+                paired.setdefault(key, {})[group] = y_pred[-1]
+                pair_prompts.setdefault(key, set()).add(prompt_text(response))
             if expected_label in positive_values:
                 y_true.append(1)
             elif expected_label in negative_values:
@@ -167,8 +285,15 @@ def build_classification_metric_inputs(
             y_true=y_true,
         )
 
+    # Pairs with textually identical prompts (failed attribute swap) only
+    # measure sampling noise.
+    paired = {
+        key: decisions for key, decisions in paired.items()
+        if not (len(pair_prompts[key]) == 1 and None not in pair_prompts[key])
+    }
     return {
         "inputs": inputs,
+        "pairedDecisions": paired,
         "classificationLabels": labels,
         "mapping": {
             "positiveLabels": sorted(positive_values),

@@ -77,6 +77,30 @@ class PersonaServiceTests(TestCase):
             )
 
 
+class PersonaCardLookupTests(TestCase):
+    def test_list_by_ids_builds_cards_from_single_lookups(self):
+        client = Mock()
+        client.get_persona.side_effect = lambda persona_id, pool: (
+            {
+                "personaId": persona_id,
+                "name": "Noah Petrov",
+                "source": "wiki",
+                "dimensions": {"age_bracket": "65+", "gender_identity": "Woman", "fam_history": "Familiar"},
+            }
+            if persona_id == "p1"
+            else (_ for _ in ()).throw(MatrAIxUnavailableError())
+        )
+
+        result = PersonaService(client=client).list_personas(limit=50, persona_ids=["p1", "gone"])
+
+        client.list_personas.assert_not_called()
+        self.assertEqual(len(result["personas"]), 1)
+        card = result["personas"][0]
+        self.assertEqual(card["name"], "Noah Petrov")
+        self.assertEqual(card["summary"], {"age_bracket": "65+"})
+        self.assertIn("gender_identity Woman", card["search_text"])
+
+
 class PersonaApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -121,6 +145,121 @@ class PersonaApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertEqual(response.data["error"], "matraix_unavailable")
+
+
+    @patch("apps.personas.views.PersonaService")
+    def test_list_api_pages_persona_cards(self, service_cls):
+        service_cls.return_value.list_personas.return_value = {
+            "pool": "pool-a",
+            "offset": 50,
+            "limit": 50,
+            "total": 10000,
+            "personas": [
+                {
+                    "persona_id": "wiki-1",
+                    "name": "Clara Rossi",
+                    "source": "wiki",
+                    "summary": {"region": "Western Europe"},
+                    "search_text": "wiki-1 Clara Rossi gender_identity Woman",
+                }
+            ],
+        }
+
+        response = self.client.get("/api/persona/personas", {"offset": 50})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        service_cls.return_value.list_personas.assert_called_once()
+        self.assertEqual(service_cls.return_value.list_personas.call_args.kwargs["limit"], 50)
+        self.assertEqual(service_cls.return_value.list_personas.call_args.kwargs["offset"], 50)
+        self.assertEqual(response.data["total"], 10000)
+        self.assertEqual(response.data["personas"][0]["personaId"], "wiki-1")
+        self.assertEqual(response.data["personas"][0]["summary"], {"region": "Western Europe"})
+
+    @patch("apps.personas.views.PersonaService")
+    def test_list_api_fetches_specific_ids(self, service_cls):
+        service_cls.return_value.list_personas.return_value = {
+            "pool": "pool-a", "offset": 0, "limit": 2, "total": 10000, "personas": [],
+        }
+
+        response = self.client.get("/api/persona/personas", {"ids": "b, a,b"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(service_cls.return_value.list_personas.call_args.kwargs["persona_ids"], ["b", "a"])
+
+    def test_list_api_rejects_oversized_pages(self):
+        response = self.client.get("/api/persona/personas", {"limit": 1000})
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ProtectedAttributeTests(TestCase):
+    """Fairness labels are limited to what LangFair supports (gender, race/ethnicity)."""
+
+    def test_persona_values_map_to_langfair_groups(self):
+        from .protected_attributes import langfair_attribute, langfair_group
+
+        self.assertEqual(langfair_attribute("gender"), "gender")
+        self.assertEqual(langfair_attribute("demo_ethnicity_broad"), "race")
+        self.assertIsNone(langfair_attribute("age_bracket"))
+        self.assertEqual(langfair_group("gender_identity", "Woman"), "female")
+        self.assertIsNone(langfair_group("gender_identity", "Non-binary"))
+        self.assertEqual(langfair_group("demo_ethnicity_broad", "South Asian"), "asian")
+        self.assertIsNone(langfair_group("demo_ethnicity_broad", "Middle Eastern"))
+
+    def test_non_langfair_attribute_is_rejected(self):
+        client = APIClient()
+        evaluation = Evaluation.objects.create(name="x", use_case_description="y")
+
+        response = client.post(
+            f"/api/evaluations/{evaluation.id}/prompt-population/generate",
+            {"promptCount": 1, "modelName": "m", "persona": {"enabled": True, "selectedAttributes": ["age_bracket"]}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("age_bracket", str(response.data))
+
+    @patch("apps.prompts.services.generation.PromptGenerationService")
+    @patch("apps.prompts.services.generation.PersonaService")
+    def test_any_attribute_can_filter_and_stratify_the_sample(self, persona_service_cls, prompt_service_cls):
+        persona_service_cls.return_value.sample_projected_personas.return_value = {
+            "personas": [{"persona_id": "p1", "attributes": {"gender_identity": "Woman"}, "missing_attributes": []}],
+        }
+        prompt_service_cls.return_value.generate_for_personas.return_value = []
+        evaluation = Evaluation.objects.create(name="x", use_case_description="y")
+
+        with patch("apps.prompts.services.threading.Thread", new=_ImmediateThread):
+            response = APIClient().post(
+                f"/api/evaluations/{evaluation.id}/prompt-population/generate",
+                {
+                    "promptCount": 1,
+                    "modelName": "m",
+                    "persona": {
+                        "enabled": True,
+                        # Fairness label: LangFair only. Sampling filters: any attribute.
+                        "selectedAttributes": ["demo_ethnicity_broad"],
+                        "filters": {"age_bracket": ["25-34"], "region": ["Western Europe"]},
+                        "stratify": "age_bracket",
+                    },
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        kwargs = persona_service_cls.return_value.sample_projected_personas.call_args.kwargs
+        self.assertEqual(kwargs["filters"], {"age_bracket": ["25-34"], "region": ["Western Europe"]})
+        self.assertEqual(kwargs["stratify"], "age_bracket")
+
+    @patch("apps.personas.views.PersonaService")
+    def test_attributes_api_lists_supported_attributes(self, service_cls):
+        service_cls.return_value.get_attributes.return_value = {"pool": "p", "attributes": [], "catalog": {}}
+
+        response = APIClient().get("/api/persona/attributes")
+
+        self.assertEqual(
+            [(item["key"], item["attribute"]) for item in response.data["protectedAttributes"]],
+            [("gender_identity", "gender"), ("demo_ethnicity_broad", "race")],
+        )
 
 
 class _ImmediateThread:
@@ -199,7 +338,7 @@ class PersonaPromptPopulationTests(TestCase):
                 "persona": {
                     "enabled": True,
                     "pool": "persona/datasets/matraix-persona-dev-sample",
-                    "selectedAttributes": ["age_bracket", "risk_tolerance"],
+                    "selectedAttributes": ["demo_ethnicity_broad"],
                     "filters": {},
                     "stratify": None,
                     "seed": 123,
@@ -259,7 +398,7 @@ class PersonaPromptPopulationTests(TestCase):
                 "promptCount": 3,
                 "persona": {
                     "enabled": True,
-                    "selectedAttributes": ["age_bracket"],
+                    "selectedAttributes": ["demo_ethnicity_broad"],
                     "seed": 123,
                 },
             },
@@ -324,7 +463,7 @@ class PersonaPromptPopulationTests(TestCase):
                 "promptCount": 1,
                 "persona": {
                     "enabled": True,
-                    "selectedAttributes": ["age_bracket"],
+                    "selectedAttributes": ["demo_ethnicity_broad"],
                     "seed": 123,
                 },
             },
@@ -380,7 +519,7 @@ class PersonaPromptPopulationTests(TestCase):
                 "promptCount": 1,
                 "persona": {
                     "enabled": True,
-                    "selectedAttributes": ["gender_identity", "age_bracket"],
+                    "selectedAttributes": ["gender_identity", "demo_ethnicity_broad"],
                     "seed": 123,
                 },
             },
@@ -415,3 +554,45 @@ class PersonaPromptPopulationTests(TestCase):
         # counterfactual prompt is that same text with gender words swapped.
         self.assertEqual(original.text, "As a female engineer, I want long-term investment advice.")
         self.assertEqual(counterfactual.text, "As a male engineer, I want long-term investment advice.")
+
+    @override_settings(PROMPT_AGENT_PROVIDER="openai_compatible", PROMPT_AGENT_MODEL_NAME="agent-model")
+    @patch("apps.prompts.services.generation.PromptGenerationService")
+    @patch("apps.prompts.services.generation.PersonaService")
+    def test_generate_population_with_picked_personas_skips_sampling(
+        self,
+        persona_service_cls,
+        prompt_service_cls,
+    ):
+        persona_service_cls.return_value.get_personas_by_ids.return_value = [
+            {"persona_id": "p1", "attributes": {"age_bracket": "25-34"}, "missing_attributes": []},
+            {"persona_id": "p2", "attributes": {}, "missing_attributes": ["age_bracket"]},
+            {"persona_id": "p3", "attributes": {"age_bracket": "35-44"}, "missing_attributes": []},
+        ]
+        prompt_service_cls.return_value.generate_for_personas.return_value = [
+            {"text": f"Prompt {i}", "category": "persona", "persona_id": pid, "persona_attributes": {}}
+            for i, pid in enumerate(["p1", "p3", "p1", "p3"])
+        ]
+
+        response = self.client.post(
+            f"/api/evaluations/{self.evaluation.id}/prompt-populations/generate",
+            {
+                "promptCount": 4,
+                "persona": {
+                    "enabled": True,
+                    "selectedAttributes": ["demo_ethnicity_broad"],
+                    "personaIds": ["p1", "p2", "p3"],
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        persona_service_cls.return_value.sample_projected_personas.assert_not_called()
+        personas = prompt_service_cls.return_value.generate_for_personas.call_args.kwargs["personas"]
+        # p2 lacks the diagnostic attribute; the others are cycled to 4 prompts.
+        self.assertEqual([p["persona_id"] for p in personas], ["p1", "p3", "p1", "p3"])
+        population = PromptPopulation.objects.get(pk=response.data["id"])
+        persona_meta = population.metadata["persona"]
+        self.assertEqual(persona_meta["persona_ids"], ["p1", "p2", "p3"])
+        self.assertEqual(persona_meta["excluded_persona_ids"], ["p2"])
+        self.assertEqual(persona_meta["unique_persona_count"], 2)

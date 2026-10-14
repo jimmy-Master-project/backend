@@ -18,5 +18,4 @@ urlpatterns = [
     path("api/", include("apps.responses.urls")),
     path("api/", include("apps.fairness.urls")),
     path("api/", include("apps.personas.urls")),
-    path("api/", include("apps.benchmark.urls")),
 ]

@@ -54,13 +54,30 @@ class PromptPopulationSerializer(serializers.ModelSerializer):
 MAX_PROMPT_COUNT = 500
 
 
+def validate_protected_attributes(value):
+    """Fairness labels must be attributes LangFair supports (gender, race/ethnicity)."""
+    from apps.personas.protected_attributes import PROTECTED_ATTRIBUTES, is_protected_attribute
+
+    unsupported = [key for key in value if not is_protected_attribute(key)]
+    if unsupported:
+        raise serializers.ValidationError(
+            f"Unsupported fairness attribute(s): {', '.join(unsupported)}. "
+            f"LangFair supports: {', '.join(PROTECTED_ATTRIBUTES)}."
+        )
+    return value
+
+
 class PersonaConfigSerializer(serializers.Serializer):
     """camelCase request body -> snake_case validated data (as stored in metadata)."""
 
     enabled = serializers.BooleanField(default=False)
     pool = serializers.CharField(required=False, allow_blank=True)
     selectedAttributes = serializers.ListField(
-        child=serializers.CharField(), required=False, default=list, source="selected_attributes"
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+        source="selected_attributes",
+        validators=[validate_protected_attributes],
     )
     # Keys are persona attribute names (data), not field names.
     filters = serializers.DictField(required=False, default=dict)
@@ -68,6 +85,14 @@ class PersonaConfigSerializer(serializers.Serializer):
     seed = serializers.IntegerField(required=False, allow_null=True, default=None)
     counterfactualEnabled = serializers.BooleanField(
         required=False, default=False, source="counterfactual_enabled"
+    )
+    # Hand-picked personas: when non-empty, these are used instead of sampling.
+    personaIds = serializers.ListField(
+        child=serializers.CharField(allow_blank=False),
+        required=False,
+        default=list,
+        max_length=MAX_PROMPT_COUNT,
+        source="persona_ids",
     )
 
 

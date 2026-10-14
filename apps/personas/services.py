@@ -1,9 +1,13 @@
 # pyright: reportMissingImports=false
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.conf import settings
 
-from services.matraix_client import MatrAIxClient
+from services.matraix_client import MatrAIxClient, MatrAIxUnavailableError
+
+# Dimensions shown on a persona card built from a single-persona lookup.
+CARD_SUMMARY_KEYS = ("age_bracket", "region", "domain", "life_stage")
 
 
 class PersonaServiceError(Exception):
@@ -92,6 +96,89 @@ class PersonaService:
             "personas": personas,
             "partial": len(personas) < sample_size,
         }
+
+    def list_personas(
+        self,
+        limit: int,
+        offset: int = 0,
+        pool: str | None = None,
+        persona_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """A page of personas for manual selection (summary card per persona).
+
+        With `persona_ids`, returns the cards of exactly those personas (e.g.
+        the ones picked for a previous population) instead of a page.
+        """
+        selected_pool = pool or settings.MATRAIX_DEFAULT_PERSONA_POOL
+        if persona_ids:
+            # MatrAIx refuses id previews on large pools, so cards are built
+            # from single-persona lookups instead.
+            personas = self._cards_for_ids(persona_ids, selected_pool)
+            return {
+                "pool": selected_pool,
+                "offset": 0,
+                "limit": len(persona_ids),
+                "total": None,
+                "personas": personas,
+            }
+        payload = self.client.list_personas(limit=limit, offset=offset, pool=selected_pool)
+        cards = payload.get("personas") or []
+        personas = [
+            {
+                "persona_id": str(card.get("personaId") or card.get("persona_id") or card.get("id")),
+                "name": card.get("name") or "",
+                "source": card.get("source") or "",
+                "summary": card.get("dimensions") if isinstance(card.get("dimensions"), dict) else {},
+                # Flat "key value ..." text of every attribute; used for search.
+                "search_text": card.get("searchText") or "",
+            }
+            for card in cards
+            if isinstance(card, dict)
+        ]
+        return {
+            "pool": selected_pool,
+            "offset": offset,
+            "limit": limit,
+            # MatrAIx browses a fixed preview subset of the pool.
+            "total": payload.get("previewCount"),
+            "personas": personas,
+        }
+
+    def _cards_for_ids(self, persona_ids: list[str], pool: str) -> list[dict[str, Any]]:
+        def card(persona_id: str) -> dict[str, Any] | None:
+            try:
+                payload = self.client.get_persona(persona_id, pool)
+            except MatrAIxUnavailableError:
+                return None  # Unknown / removed persona: just leave it out.
+            dimensions = self._extract_dimensions(payload)
+            name = payload.get("name") or ""
+            source = payload.get("source") or ""
+            pairs = " ".join(f"{key} {value}" for key, value in dimensions.items())
+            return {
+                "persona_id": self._extract_persona_id(payload) or persona_id,
+                "name": name,
+                "source": source,
+                "summary": {key: dimensions[key] for key in CARD_SUMMARY_KEYS if key in dimensions},
+                "search_text": f"{persona_id} {name} {source} {pairs}",
+            }
+
+        with ThreadPoolExecutor(max_workers=8) as pool_executor:
+            cards = list(pool_executor.map(card, persona_ids))
+        return [item for item in cards if item is not None]
+
+    def get_personas_by_ids(
+        self,
+        persona_ids: list[str],
+        selected_attributes: list[str],
+        pool: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Hand-picked personas (in the given order, duplicates dropped)."""
+        selected_pool = pool or settings.MATRAIX_DEFAULT_PERSONA_POOL
+        unique_ids = list(dict.fromkeys(str(persona_id) for persona_id in persona_ids))
+        return [
+            self.get_projected_persona(persona_id, selected_attributes, selected_pool)
+            for persona_id in unique_ids
+        ]
 
     def get_projected_persona(
         self,

@@ -745,6 +745,51 @@ recommendation
 
 LangFair 會以 Run 目前已儲存的所有 `LLMResponse` 作為計算輸入，並使用 cache 避免相同資料重複計算。
 
+`options.toxicity.classifiers` 只接受 `detoxify_unbiased`、`detoxify_original`、`detoxify_multilingual`、`roberta-hate-speech-dynabench-r4-target`；`toxigen` 因 LangFair 0.8.0 分數反轉的 bug 被拒絕（400）。
+
+### 語言檢查（非英文拒算）
+
+Response 頂層會帶 `languageCheck`：
+
+```json
+{
+  "languageCheck": {
+    "isEnglish": false,
+    "method": "ascii_ratio",
+    "asciiRatioThreshold": 0.9,
+    "checkedResponseCount": 120,
+    "nonEnglishResponseCount": 120,
+    "nonEnglishResponseIds": [434, 435]
+  }
+}
+```
+
+每筆回覆計算「ASCII 字母 / 全部字母」（`str.isalpha`，標點與數字不計）。只要有一筆低於 0.9，整個 run 拒算：所有選取的 suite（包含 `classification` 與 `recommendation`）都不計算，各自回傳：
+
+```json
+{
+  "status": "unsupported_language",
+  "suite": "toxicity",
+  "message": "LangFair toxicity metrics were not computed: ...",
+  "languageCheck": { "...": "..." }
+}
+```
+
+### 補充欄位
+
+所有信賴區間皆為 95% percentile bootstrap（1000 次、固定 seed），格式為 `{"ciLow", "ciHigh", "confidence", "resamples"}`；以 `mean_with_ci` 計算者另含 `value` 與 `n`。`confidenceIntervals` 以指標名稱對應同層 `metrics` 中的值。
+
+| Suite | 欄位 | 說明 |
+|---|---|---|
+| toxicity | `groupComparison` | `byGroup`（各組指標）、`gap.metrics`（第一組 − 第二組，見 `comparison`）、`gap.confidenceIntervals`、`counts` |
+| stereotype | `groupComparison.<category>` | 同上，只針對 Stereotype Classifier 指標 |
+| counterfactual | `confidenceIntervals`、`pairCount`、`groups`、`excludedIdenticalPromptPairs` | Sentiment Bias 的 CI 為重抽 pair 後重算 Wasserstein-1 |
+| counterfactual | `noiseBaseline` | 同一 prompt 不同次生成之間的相同指標（含自己的 `metrics` / `confidenceIntervals`） |
+| recommendation | `metrics` | **已正規化**的 Jaccard / PRAG / SERP（雙向取小值、完全相同 = 1）；LangFair 原始值在 `langfairRawMetrics` |
+| recommendation | `confidenceIntervals`、`noiseBaseline`、`excludedIdenticalPromptPairs` | 同 counterfactual |
+| classification | `groupGap` | Predicted Positive Rate（有 `expected_label` 時另含 FNR / FPR / FDR / FOR）的有號組間差與 CI |
+| classification | `pairedDecisions` | 反事實 pair 決策翻轉率 `Decision Flip Rate`、`positiveOnlyFor`、`mcnemarExactPValue` |
+
 ## 10. Persona API
 
 ### 取得 Persona Attributes
@@ -790,39 +835,7 @@ POST /api/persona/sample/
 }
 ```
 
-## 11. Benchmark API
-
-### 啟動 DialogSum Gender Counterfactual Benchmark
-
-```http
-POST /api/benchmark/dialogsum/
-```
-
-#### Request
-
-```json
-{
-  "domain": "gender",
-  "pair_count": 100,
-  "seed": 42
-}
-```
-
-目前 `domain` 只支援 `gender`。
-
-#### Response `202`
-
-```json
-{
-  "evaluation_id": 30,
-  "run_id": 31,
-  "pair_count": 100,
-  "prompt_count": 200,
-  "status": "running"
-}
-```
-
-## 12. 建議整合流程
+## 11. 建議整合流程
 
 ### 方式 A：Backend 主動呼叫 Target LLM
 

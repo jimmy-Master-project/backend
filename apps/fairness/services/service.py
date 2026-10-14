@@ -17,8 +17,12 @@ from .suites import toxicity as toxicity_suite
 from .utils import (
     SUPPORTED_SUITES,
     _to_jsonable,
+    check_english_responses,
+    extract_attribute_group,
     get_default_suites_for_run,
     normalize_langfair_language,
+    selected_protected_attributes,
+    unsupported_language,
 )
 
 
@@ -43,6 +47,14 @@ class PreparedRun:
     @property
     def prompts(self) -> list[str]:
         return [str(row.prompt.text) for row in self.response_rows]
+
+    @property
+    def groups(self) -> dict[str, list[str | None]]:
+        """Per selected LangFair attribute ('gender', 'race'), each response's group."""
+        return {
+            attribute: [extract_attribute_group(row, attribute) for row in self.response_rows]
+            for attribute in selected_protected_attributes(self.run)
+        }
 
 
 def _usable_response_rows(run: Any) -> tuple[list[Any], int]:
@@ -124,8 +136,16 @@ class LangFairMetricService:
             "language": prepared.language,
             "suites": {},
         }
+        # LangFair only supports English; refuse the whole run rather than
+        # report meaningless numbers for e.g. Chinese responses.
+        language_check = check_english_responses(prepared.response_rows)
+        results["languageCheck"] = language_check
         # LangFair evaluators are cached per process and keep per-call state,
         # so serialize computations.
+        if not language_check["isEnglish"]:
+            for suite in prepared.suites:
+                results["suites"][suite] = unsupported_language(suite, language_check)
+            return _to_jsonable(results)
         with COMPUTE_LOCK:
             for suite in prepared.suites:
                 results["suites"][suite] = SUITE_HANDLERS[suite](self, prepared)
@@ -147,11 +167,11 @@ class LangFairMetricService:
         return results
 
     # ---- suites (kept as methods for backwards compatibility / patching) ----
-    def evaluate_toxicity(self, responses, prompts=None, options=None) -> dict[str, Any]:
-        return toxicity_suite.evaluate_toxicity(responses, prompts, options)
+    def evaluate_toxicity(self, responses, prompts=None, options=None, groups=None) -> dict[str, Any]:
+        return toxicity_suite.evaluate_toxicity(responses, prompts, options, groups)
 
-    def evaluate_stereotype(self, responses, prompts=None, options=None) -> dict[str, Any]:
-        return stereotype_suite.evaluate_stereotype(responses, prompts, options)
+    def evaluate_stereotype(self, responses, prompts=None, options=None, groups=None) -> dict[str, Any]:
+        return stereotype_suite.evaluate_stereotype(responses, prompts, options, groups)
 
     def evaluate_classification(self, options=None) -> dict[str, Any]:
         return classification_suite.evaluate_classification(options)
@@ -188,16 +208,23 @@ def _run_toxicity(service: LangFairMetricService, prepared: PreparedRun) -> dict
         responses=prepared.responses,
         prompts=prepared.prompts,
         options=_suite_options(prepared, "toxicity"),
+        groups=prepared.groups,
     )
 
 
 def _run_stereotype(service: LangFairMetricService, prepared: PreparedRun) -> dict[str, Any]:
     options = _suite_options(prepared, "stereotype")
-    options.setdefault("categories", stereotype_suite.infer_stereotype_categories(prepared.response_rows))
+    options.setdefault(
+        "categories",
+        stereotype_suite.infer_stereotype_categories(
+            prepared.response_rows, selected_protected_attributes(prepared.run)
+        ),
+    )
     return service.evaluate_stereotype(
         responses=prepared.responses,
         prompts=prepared.prompts,
         options=options,
+        groups=prepared.groups,
     )
 
 

@@ -19,6 +19,15 @@ DEFAULT_STEREOTYPE_CLASSIFIER = "wu981526092/Sentence-Level-Stereotype-Detector"
 DEFAULT_TRANSFORMER = "all-MiniLM-L6-v2"
 DEFAULT_DEVICE = "cpu"
 DEFAULT_TOXICITY_BATCH_SIZE = 250
+# LangFair's "toxigen" scorer compares the label's last character (a str) to
+# the int 1, which is never equal, so every score is inverted (1 - p). It is
+# deliberately left out.
+ALLOWED_TOXICITY_CLASSIFIERS = {
+    "detoxify_unbiased",
+    "detoxify_original",
+    "detoxify_multilingual",
+    "roberta-hate-speech-dynabench-r4-target",
+}
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 256
 
@@ -63,6 +72,16 @@ def normalize_metric_options(options: Mapping[str, Any] | None) -> dict[str, Any
             suite_options["device"] = _check(suite_options["device"], allowed_devices(), "device")
         if "batchSize" in suite_options:
             suite_options["batchSize"] = clamp_batch_size(suite_options["batchSize"])
+    toxicity = normalized.get("toxicity")
+    if isinstance(toxicity, dict) and "classifiers" in toxicity:
+        classifiers = toxicity["classifiers"]
+        if isinstance(classifiers, str):
+            classifiers = [classifiers]
+        if not isinstance(classifiers, list) or not classifiers:
+            raise ValueError("classifiers must be a non-empty list.")
+        toxicity["classifiers"] = [
+            _check(classifier, ALLOWED_TOXICITY_CLASSIFIERS, "classifier") for classifier in classifiers
+        ]
     stereotype = normalized.get("stereotype")
     if isinstance(stereotype, dict) and "classifierModel" in stereotype:
         stereotype["classifierModel"] = _check(

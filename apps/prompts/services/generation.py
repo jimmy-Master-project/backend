@@ -76,21 +76,35 @@ class PromptPopulationGenerationService:
         seed = persona_config.get("seed")
         if seed is None:
             seed = random.SystemRandom().randint(0, 2_147_483_647)
-        sample = PersonaService().sample_projected_personas(
-            sample_size=data["prompt_count"],
-            selected_attributes=selected_attributes,
-            pool=pool,
-            filters=filters,
-            stratify=stratify,
-            seed=seed,
-            allow_partial=True,
-        )
-        sampled_personas = sample.get("personas") or []
-        if not sampled_personas:
-            raise PersonaServiceError(
-                "No sampled personas contain all selected attributes. Try a larger persona pool, "
-                "loosen filters, or select attributes with broader coverage."
+        persona_ids = [str(item) for item in persona_config.get("persona_ids") or []]
+        excluded_persona_ids: list[str] = []
+        if persona_ids:
+            # Hand-picked personas: no sampling, filters/stratify/seed unused.
+            picked = PersonaService().get_personas_by_ids(persona_ids, selected_attributes, pool)
+            excluded_persona_ids = [p["persona_id"] for p in picked if p.get("missing_attributes")]
+            sampled_personas = [p for p in picked if not p.get("missing_attributes")]
+            sample: dict[str, Any] = {"matraix_sample": None}
+            if not sampled_personas:
+                raise PersonaServiceError(
+                    "None of the selected personas has all diagnostic attributes "
+                    f"({', '.join(selected_attributes)}). Pick other personas or change the attributes."
+                )
+        else:
+            sample = PersonaService().sample_projected_personas(
+                sample_size=data["prompt_count"],
+                selected_attributes=selected_attributes,
+                pool=pool,
+                filters=filters,
+                stratify=stratify,
+                seed=seed,
+                allow_partial=True,
             )
+            sampled_personas = sample.get("personas") or []
+            if not sampled_personas:
+                raise PersonaServiceError(
+                    "No sampled personas contain all selected attributes. Try a larger persona pool, "
+                    "loosen filters, or select attributes with broader coverage."
+                )
         personas = [
             {**persona, "sample_instance": index + 1}
             for index, persona in enumerate(
@@ -112,6 +126,8 @@ class PromptPopulationGenerationService:
                 "filters": filters,
                 "stratify": stratify,
                 "sampling_seed": seed,
+                "persona_ids": persona_ids,
+                "excluded_persona_ids": excluded_persona_ids,
                 "matraix_sample": sample.get("matraix_sample"),
                 "unique_persona_count": len(sampled_personas),
                 "reused_personas": len(sampled_personas) < data["prompt_count"],

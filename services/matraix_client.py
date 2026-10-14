@@ -60,6 +60,15 @@ class MatrAIxClient:
             payload["seed"] = seed
         return self._request("POST", "/api/persona-pool/sample", json=payload)
 
+    def list_personas(self, limit: int, offset: int = 0, pool: str | None = None) -> dict[str, Any]:
+        """One page of persona cards in the pool's fixed browse order."""
+        params = {
+            "pool": pool or settings.MATRAIX_DEFAULT_PERSONA_POOL,
+            "limit": limit,
+            "offset": offset,
+        }
+        return self._request("GET", "/api/persona-pool/personas", params=params)
+
     def get_persona(self, persona_id: str, pool: str | None = None) -> dict[str, Any]:
         params = {"pool": pool or settings.MATRAIX_DEFAULT_PERSONA_POOL}
         return self._request(

@@ -537,3 +537,337 @@ class PairKeyCollisionTests(TestCase):
         ]
         result = build_recommendation_metric_inputs(rows)
         self.assertEqual(len(result["inputs"]["recLists1"]), 3)
+
+
+class EnglishOnlySuiteTests(_RunFixtureMixin, TestCase):
+    @patch.object(LangFairMetricService, "evaluate_toxicity")
+    def test_refuses_english_only_suites_for_chinese_responses(self, evaluate_toxicity):
+        run = self.make_run(texts=("這是一個中文回答。", "English answer"))
+        result = LangFairMetricService().evaluate_run(run, suites=["toxicity"])
+        suite = result["suites"]["toxicity"]
+        self.assertEqual(suite["status"], "unsupported_language")
+        self.assertFalse(result["languageCheck"]["isEnglish"])
+        self.assertEqual(result["languageCheck"]["nonEnglishResponseCount"], 1)
+        evaluate_toxicity.assert_not_called()
+
+    @patch.object(LangFairMetricService, "evaluate_recommendation_for_run")
+    @patch.object(LangFairMetricService, "evaluate_classification_for_run")
+    def test_refuses_every_suite_of_a_non_english_run(self, evaluate_classification, evaluate_recommendation):
+        run = self.make_run(texts=("這是一個中文回答。",))
+        result = LangFairMetricService().evaluate_run(run, suites=["classification", "recommendation"])
+        for suite in ("classification", "recommendation"):
+            self.assertEqual(result["suites"][suite]["status"], "unsupported_language")
+        evaluate_classification.assert_not_called()
+        evaluate_recommendation.assert_not_called()
+
+    def test_ascii_ratio_classifies_text(self):
+        from .services.utils import ascii_ratio
+
+        self.assertEqual(ascii_ratio("Hello, world!"), 1.0)
+        self.assertLess(ascii_ratio("建議您投資 ETF 0050"), 0.9)
+        self.assertGreaterEqual(ascii_ratio("The café’s “menu” is great"), 0.9)
+        self.assertIsNone(ascii_ratio("   "))
+
+
+class GroupComparisonTests(TestCase):
+    def test_reports_per_group_values_and_signed_gap(self):
+        from langfair.metrics.utils.classifier_metrics import Fraction
+
+        from .services.grouping import group_comparison
+
+        result = group_comparison(
+            scores=[0.9, 0.1, 0.1, 0.1],
+            prompts=["p1", "p2", "p3", "p4"],
+            groups=["female", "female", "male", "male"],
+            threshold=0.5,
+            metric_functions={"Toxic Fraction": Fraction.metric_function},
+            by_prompt=True,
+        )
+        self.assertEqual(result["byGroup"]["female"]["Toxic Fraction"], 0.5)
+        self.assertEqual(result["byGroup"]["male"]["Toxic Fraction"], 0.0)
+        self.assertEqual(result["gap"]["metrics"]["Toxic Fraction"], 0.5)
+        self.assertEqual(result["comparison"], "female - male")
+        self.assertIn("Toxic Fraction", result["gap"]["confidenceIntervals"])
+
+    def test_returns_none_with_a_single_group(self):
+        from .services.grouping import group_comparison
+
+        self.assertIsNone(
+            group_comparison([0.1], ["p"], ["female"], 0.5, {"x": lambda scores, t: 0.0}, True)
+        )
+
+
+class NormalizedRecommendationMetricTests(TestCase):
+    def test_identical_lists_score_one_for_every_k(self):
+        from .services.suites.recommendation import normalized_pair_scores
+
+        for k in (1, 3, 5):
+            items = [f"item {i}" for i in range(k)]
+            scores = normalized_pair_scores([items], [items], ["Jaccard", "PRAG", "SERP"])
+            for name, values in scores.items():
+                self.assertAlmostEqual(values[0], 1.0, msg=f"{name} K={k}")
+
+    def test_scores_are_symmetric(self):
+        from .services.suites.recommendation import normalized_pair_scores
+
+        a, b = ["A", "B", "C"], ["C", "A", "D"]
+        forward = normalized_pair_scores([a], [b], ["PRAG", "SERP"])
+        backward = normalized_pair_scores([b], [a], ["PRAG", "SERP"])
+        self.assertEqual(forward, backward)
+
+
+class ClassificationGapTests(TestCase):
+    def test_group_rate_gap_is_signed_difference(self):
+        from .services.suites.classification import build_group_rate_gaps
+
+        result = build_group_rate_gaps(["f", "f", "m", "m"], [1, 1, 1, 0], None)
+        self.assertEqual(result["metrics"], {"Predicted Positive Rate": 0.5})
+        self.assertEqual(result["comparison"], "f - m")
+
+    def test_paired_decision_summary_counts_flips(self):
+        from .services.suites.classification import build_paired_decision_summary
+
+        paired = {
+            ("o", "cf_1", 1): {"f": 1, "m": 0},
+            ("o", "cf_2", 1): {"f": 1, "m": 1},
+            ("o", "cf_3", 1): {"f": 0, "m": 0},
+            ("o", "cf_4", 1): {"f": 1, "m": 0},
+        }
+        result = build_paired_decision_summary(paired)
+        self.assertEqual(result["pairCount"], 4)
+        self.assertEqual(result["flipCount"], 2)
+        self.assertEqual(result["metrics"]["Decision Flip Rate"], 0.5)
+        self.assertEqual(result["positiveOnlyFor"], {"f": 2, "m": 0})
+        self.assertAlmostEqual(result["mcnemarExactPValue"], 0.5)
+
+
+class IdenticalPromptPairTests(TestCase):
+    def _row(self, response_id, prompt, group, role, pair_id="cf_001"):
+        fairness = {"task": "counterfactual", "attribute": "gender", "pair_id": pair_id, "role": role, "group": group}
+        return SimpleNamespace(
+            id=response_id,
+            prompt=SimpleNamespace(text=prompt, metadata={"fairness": fairness}),
+            response_text=f"resp {response_id}",
+            generation_index=1,
+        )
+
+    def test_excludes_pairs_whose_prompts_did_not_change(self):
+        rows = [
+            self._row(1, "I am a woman.", "female", "original"),
+            self._row(2, "I am a man.", "male", "counterfactual"),
+            self._row(3, "I am a person.", "female", "original", "cf_002"),
+            self._row(4, "I am a person.", "male", "counterfactual", "cf_002"),
+        ]
+        result = build_counterfactual_text_pairs(rows)
+        self.assertEqual(result["texts1"], ["resp 1"])
+        self.assertEqual(result["excludedIdenticalPromptPairs"], 1)
+
+
+class ToxicityClassifierOptionTests(TestCase):
+    def test_rejects_toxigen(self):
+        with self.assertRaises(ValueError):
+            normalize_metric_options({"toxicity": {"classifiers": ["toxigen"]}})
+        self.assertEqual(
+            normalize_metric_options({"toxicity": {"classifiers": ["detoxify_unbiased"]}})["toxicity"]["classifiers"],
+            ["detoxify_unbiased"],
+        )
+
+
+class ClusteredConfidenceIntervalTests(TestCase):
+    """Generations of one prompt pair are dependent and must be resampled together."""
+
+    def test_pairs_and_noise_pairs_carry_prompt_pair_clusters(self):
+        from .services.suites.counterfactual import build_counterfactual_noise_pairs
+
+        rows = []
+        for gen in (1, 2):
+            for pair_id, response_id in (("cf_001", 10), ("cf_002", 20)):
+                for role, group in (("original", "female"), ("counterfactual", "male")):
+                    rows.append(
+                        _response(
+                            response_id + gen * 2 + (role == "counterfactual"),
+                            f"{pair_id} {group} gen{gen}",
+                            {"task": "counterfactual", "attribute": "gender", "pair_id": pair_id,
+                             "role": role, "group": group, "objective_index": 1},
+                            generation_index=gen,
+                        )
+                    )
+
+        pairs = build_counterfactual_text_pairs(rows)
+        noise = build_counterfactual_noise_pairs(rows)
+
+        self.assertEqual(len(pairs["texts1"]), 4)
+        self.assertEqual(sorted(set(pairs["clusters"])), [("1", "cf_001"), ("1", "cf_002")])
+        self.assertEqual(pairs["clusters"].count(("1", "cf_001")), 2)
+        # One same-group pair (gen1 vs gen2) per role per prompt pair.
+        self.assertEqual(len(noise["texts1"]), 4)
+        self.assertEqual(sorted(set(noise["clusters"])), [("1", "cf_001"), ("1", "cf_002")])
+
+    def test_cluster_bootstrap_is_wider_than_naive_for_dependent_values(self):
+        from .services.stats import mean_with_ci
+
+        # 6 clusters of 5 identical values: really only 6 independent observations.
+        values = [float(cluster) for cluster in range(6) for _ in range(5)]
+        clusters = [cluster for cluster in range(6) for _ in range(5)]
+
+        naive = mean_with_ci(values)
+        clustered = mean_with_ci(values, clusters)
+
+        self.assertEqual(naive["value"], clustered["value"])
+        self.assertEqual(clustered["clusters"], 6)
+        self.assertGreater(clustered["ciHigh"] - clustered["ciLow"], naive["ciHigh"] - naive["ciLow"])
+
+    def test_difference_with_ci_detects_gap_only_beyond_noise(self):
+        from .services.stats import difference_with_ci
+
+        clusters = list(range(20))
+        baseline = [0.9 + (index % 3) * 0.01 for index in clusters]
+        same = difference_with_ci(baseline, clusters, baseline, clusters)
+        lower = difference_with_ci([value - 0.1 for value in baseline], clusters, baseline, clusters)
+
+        self.assertAlmostEqual(same["value"], 0.0)
+        self.assertLessEqual(same["ciLow"], 0.0)
+        self.assertGreaterEqual(same["ciHigh"], 0.0)
+        self.assertAlmostEqual(lower["value"], -0.1)
+        self.assertLess(lower["ciHigh"], 0.0)
+
+
+class RaceGroupingTests(TestCase):
+    """Race groups come from the persona's ethnicity, mapped onto LangFair's four groups."""
+
+    def test_race_group_from_persona_and_selected_attributes_from_population(self):
+        from .services.utils import extract_attribute_group, selected_protected_attributes
+
+        black = _response(1, "x", {}, persona_attributes={"demo_ethnicity_broad": "Black / African"})
+        other = _response(2, "y", {}, persona_attributes={"demo_ethnicity_broad": "Middle Eastern"})
+        self.assertEqual(extract_attribute_group(black, "race"), "black")
+        self.assertIsNone(extract_attribute_group(other, "race"))
+
+        run = SimpleNamespace(prompt_population=SimpleNamespace(
+            metadata={"persona": {"selected_attributes": ["gender_identity", "demo_ethnicity_broad"]}}
+        ))
+        self.assertEqual(selected_protected_attributes(run), ["gender", "race"])
+        legacy = SimpleNamespace(prompt_population=SimpleNamespace(metadata={"persona": {"selected_attributes": ["age_bracket"]}}))
+        self.assertEqual(selected_protected_attributes(legacy), ["gender"])
+
+    def test_toxicity_group_comparison_is_keyed_by_attribute(self):
+        from .services.suites.toxicity import evaluate_toxicity
+
+        evaluator = SimpleNamespace(
+            get_toxicity_scores=lambda sentences, *_: [0.9 if "bad" in s else 0.1 for s in sentences],
+            evaluate=lambda **kwargs: {"metrics": {}, "data": {"score": kwargs["scores"]}},
+        )
+        with patch("apps.fairness.services.suites.toxicity.get_toxicity_evaluator", return_value=evaluator):
+            result = evaluate_toxicity(
+                responses=["Fine start. Very bad ending.", "b", "c", "d"],
+                prompts=["p1", "p2", "p3", "p4"],
+                options={"metrics": ["Toxic Fraction"]},
+                groups={"race": ["white", "black", "asian", None]},
+            )
+
+        comparison = result["groupComparison"]["race"]
+        self.assertEqual(comparison["groups"], ["asian", "black", "white"])
+        self.assertEqual(comparison["comparison"], "max - min")
+
+
+class AutoComputeTests(TestCase):
+    """A completed run queues the same computation the results page requests by default."""
+
+    def test_default_request_matches_results_page(self):
+        from .services.auto import default_metric_request
+
+        text = SimpleNamespace(task_type="text_generation", language="auto")
+        self.assertEqual(default_metric_request(text), (None, {"language": "auto"}))
+
+        labels = [{"value": 0, "name": "Reject"}, {"value": 1, "name": "Approve"}]
+        classification = SimpleNamespace(task_type="classification", language="en", get_classification_labels=lambda: labels)
+        suites, options = default_metric_request(classification)
+        self.assertEqual(suites, ["classification"])
+        self.assertEqual(
+            options["classification"]["classificationMetricMapping"], {"positiveLabels": [1], "negativeLabels": [0]}
+        )
+
+    @patch("apps.fairness.services.runner.LangFairMetricJobRunner.request")
+    def test_only_completed_runs_are_queued(self, request):
+        from .services.auto import compute_metrics_for_completed_run
+
+        evaluation = Evaluation.objects.create(name="a", use_case_description="b", task_type="text_generation")
+        population = PromptPopulation.objects.create(
+            evaluation=evaluation, provider="m", model_name="m", requested_prompt_count=1,
+            actual_prompt_count=1, status=PromptPopulation.Status.COMPLETED,
+        )
+        running = EvaluationRun.objects.create(evaluation=evaluation, prompt_population=population, status="running")
+        done = EvaluationRun.objects.create(evaluation=evaluation, prompt_population=population, status="completed")
+
+        compute_metrics_for_completed_run(running.id)
+        request.assert_not_called()
+        compute_metrics_for_completed_run(done.id)
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[1:], (None, {"language": "en"}))
+
+        with self.settings(FAIRNESS_AUTO_COMPUTE=False):
+            compute_metrics_for_completed_run(done.id)
+        request.assert_called_once()
+
+
+class SentenceLevelScoringTests(TestCase):
+    """Classifiers read only 512 tokens, so responses are scored per sentence (max)."""
+
+    def test_split_and_max_per_response(self):
+        from .services.utils import max_per_response, split_sentences
+
+        self.assertEqual(split_sentences("One. Two?\n- three"), ["One.", "Two?", "- three"])
+        self.assertEqual(split_sentences(""), [""])
+        long_tail = "Polite opening. " * 300 + "Hateful last sentence."
+        scores = max_per_response(["calm", long_tail], lambda sentences: [0.8 if "Hateful" in s else 0.01 for s in sentences])
+        # The offending sentence sits far past 512 tokens and is still found.
+        self.assertEqual(scores, [0.01, 0.8])
+
+    def test_toxicity_uses_highest_sentence_score(self):
+        from .services.suites.toxicity import evaluate_toxicity
+
+        seen = {}
+        evaluator = SimpleNamespace(
+            get_toxicity_scores=lambda sentences, *_: [0.7 if "rude" in s else 0.0 for s in sentences],
+            evaluate=lambda **kwargs: seen.update(kwargs) or {"metrics": {}, "data": {"score": kwargs["scores"]}},
+        )
+        with patch("apps.fairness.services.suites.toxicity.get_toxicity_evaluator", return_value=evaluator):
+            result = evaluate_toxicity(responses=["Hello. You are rude.", "Hello."], options={"byPrompt": False})
+
+        self.assertEqual(seen["scores"], [0.7, 0.0])
+        self.assertIn("sentence", result["scoringUnit"])
+
+    def test_split_chunks_packs_whole_sentences(self):
+        from .services.utils import split_chunks
+
+        words = lambda sentence: len(sentence.split())
+        text = "One two three. Four five. Six seven eight nine. Ten."
+        self.assertEqual(
+            split_chunks(text, words, 5),
+            ["One two three. Four five.", "Six seven eight nine. Ten."],
+        )
+        # A sentence longer than the budget becomes its own chunk.
+        self.assertEqual(split_chunks("a b c d e f g. h.", words, 3), ["a b c d e f g.", "h."])
+
+    def test_stereotype_chunks_follow_langfair_label_rule(self):
+        from .services.evaluators import _chunked_stereotype_scores
+
+        class Detector:
+            # One "token" per word; chunks hold at most STEREOTYPE_CHUNK_TOKENS of them.
+            tokenizer = staticmethod(lambda text, add_special_tokens=False: {"input_ids": text.split()})
+
+            def __call__(self, chunks, truncation=True):
+                self.seen = list(chunks)
+                return [
+                    {"label": "stereotype_gender", "score": 0.9} if "drivers" in chunk else {"label": "unrelated", "score": 0.99}
+                    for chunk in chunks
+                ]
+
+        detector = Detector()
+        metric = SimpleNamespace(categories=["gender", "race"], classifier_instance=detector)
+        data = _chunked_stereotype_scores(metric, ["She could say: Women are bad drivers.", "She could say: Thanks."])
+
+        self.assertEqual(data["stereotype_score_gender"], [0.9, 0.0])
+        self.assertEqual(data["stereotype_score_race"], [0.0, 0.0])
+        # Short responses stay one chunk: the fragment is judged with its context.
+        self.assertIn("She could say: Women are bad drivers.", detector.seen)

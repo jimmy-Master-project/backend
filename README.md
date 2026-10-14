@@ -49,7 +49,6 @@ apps/
     responses/      LLMResponse 查詢 API / 外部機器人回傳
     fairness/       LangFair fairness metrics（非同步計算 + 快取）
     personas/       MatrAIx persona 代理 API
-    benchmark/      DialogSum counterfactual 驗證
 services/           MatrAIx client、camelCase helper
 ```
 
@@ -105,9 +104,6 @@ GET           /api/runs/{run_id}/fairness-metrics/?suite=a&suite=b&options=<json
 # Personas（代理 MatrAIx，backend↔MatrAIx 維持 MatrAIx 自己的格式）
 GET           /api/persona/attributes/?pool=                       # {pool, attributes: [{key, label, category, description?, values?}]}
 POST          /api/persona/sample/                                 # {sampleSize, selectedAttributes, pool?, filters?, stratify?, seed?}
-
-# Benchmark
-POST          /api/benchmark/dialogsum/                            # {domain, pairCount, seed} → 202 {evaluationId, runId, pairCount, promptCount, status}
 ```
 
 主要 response 形狀：

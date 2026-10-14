@@ -69,6 +69,7 @@ def _serialize_persona_config(persona):
         "filters": persona.get("filters") or {},
         "stratify": persona.get("stratify"),
         "seed": persona.get("sampling_seed"),
+        "personaIds": persona.get("persona_ids") or [],
         "counterfactualEnabled": bool(persona.get("counterfactual_enabled")),
         "uniquePersonaCount": persona.get("unique_persona_count"),
         "reusedPersonas": bool(persona.get("reused_personas")),
