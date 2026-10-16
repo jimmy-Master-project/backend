@@ -227,3 +227,34 @@ class LatestRunStatusView(APIView):
         if run is None:
             return Response({"detail": "No runs found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(RunStatusSerializer(run).data)
+
+
+class RunExportView(APIView):
+    """GET /api/runs/{id}/export/ -> ZIP with one CSV per table;
+    ?table=<key> -> that single CSV (keys: see apps.runs.export.TABLES)."""
+
+    def get(self, request, run_id):
+        from django.http import HttpResponse
+
+        from . import export
+
+        run = get_object_or_404(
+            EvaluationRun.objects.select_related("evaluation", "prompt_population"), pk=run_id
+        )
+        table = request.query_params.get("table")
+        if table:
+            if table not in export.TABLES:
+                return Response(
+                    {"error": f"Unknown table '{table}'. Use one of: {', '.join(export.TABLES)}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            file_name, content = export.build_table(run, table)
+            file_name = f"run{run.id}_{file_name}"
+            content_type = "text/csv; charset=utf-8"
+        else:
+            content = export.build_zip(run)
+            file_name = f"run{run.id}_export.zip"
+            content_type = "application/zip"
+        response = HttpResponse(content, content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{file_name}"'
+        return response

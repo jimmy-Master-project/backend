@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import LatestRunStatusView, RunDetailView, RunStatusView, StartRunView
+from .views import LatestRunStatusView, RunDetailView, RunExportView, RunStatusView, StartRunView
 
 urlpatterns = [
     path(
@@ -17,6 +17,8 @@ urlpatterns = [
     path("runs/<int:run_id>/", RunDetailView.as_view(), name="run-detail"),
     path("runs/<int:run_id>/status", RunStatusView.as_view(), name="run-status-no-slash"),
     path("runs/<int:run_id>/status/", RunStatusView.as_view(), name="run-status"),
+    path("runs/<int:run_id>/export", RunExportView.as_view(), name="run-export-no-slash"),
+    path("runs/<int:run_id>/export/", RunExportView.as_view(), name="run-export"),
     path(
         "evaluations/<int:evaluation_id>/runs/latest/",
         LatestRunStatusView.as_view(),

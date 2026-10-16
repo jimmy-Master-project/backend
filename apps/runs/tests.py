@@ -309,3 +309,87 @@ class StartRunViewTests(RunTestMixin, TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         self.assertTrue(EvaluationRun.objects.filter(pk=run.id).exists())
+
+
+class RunExportTests(RunTestMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.fairness.models import LangFairMetricResult
+
+        self.run = self.make_run(status=EvaluationRun.Status.COMPLETED, label="中文標籤")
+        self.prompts[0].metadata = {
+            "persona_id": "p1",
+            "persona_attributes": {"gender_identity": "Woman", "region": "Asia"},
+            "fairness": {"pair_id": "cf_1", "role": "original", "group": "female"},
+        }
+        self.prompts[0].save()
+        LLMResponse.objects.create(
+            run=self.run, prompt=self.prompts[0], generation_index=1, response_text="回答 one"
+        )
+        LLMResponse.objects.create(
+            run=self.run, prompt=self.prompts[1], generation_index=1, response_text="", error="boom"
+        )
+        LangFairMetricResult.objects.create(
+            run=self.run,
+            cache_key="k",
+            status=LangFairMetricResult.Status.COMPLETED,
+            result={"suites": {"toxicity": {
+                "metrics": {"Toxic Fraction": 0.5},
+                "confidenceIntervals": {"Toxic Fraction": {"ciLow": 0.1, "ciHigh": 0.9, "n": 2}},
+                "groupComparison": {"gender": {
+                    "comparison": "female - male",
+                    "counts": {"female": {"responses": 1, "units": 1}},
+                    "byGroup": {"female": {"Toxic Fraction": 0.5}},
+                    "gap": {"metrics": {"Toxic Fraction": 0.2},
+                            "confidenceIntervals": {"Toxic Fraction": {"ciLow": -0.1, "ciHigh": 0.4}}},
+                }},
+            }}},
+        )
+
+    def read_csv(self, table):
+        import csv
+        import io
+
+        response = self.client.get(f"/api/runs/{self.run.id}/export/", {"table": table})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.content.startswith(b"\xef\xbb\xbf"))  # BOM for Excel
+        return list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+
+    def test_zip_contains_one_csv_per_table(self):
+        import io
+        import zipfile
+
+        from .export import TABLES
+
+        response = self.client.get(f"/api/runs/{self.run.id}/export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
+        self.assertEqual(names, [file_name for file_name, _, _ in TABLES.values()])
+
+    def test_tables(self):
+        responses = self.read_csv("responses")
+        self.assertEqual([row["response_text"] for row in responses], ["回答 one", ""])
+        self.assertEqual(responses[0]["pair_id"], "cf_1")
+        self.assertEqual(responses[0]["gender_group"], "female")
+        self.assertEqual(responses[1]["error"], "boom")
+
+        personas = self.read_csv("personas")
+        self.assertEqual(personas[0]["persona_id"], "p1")
+        self.assertEqual(personas[0]["region"], "Asia")
+
+        metrics = self.read_csv("metrics")
+        self.assertEqual(metrics[0]["metric"], "Toxic Fraction")
+        self.assertEqual((metrics[0]["ci_low"], metrics[0]["ci_high"]), ("0.1", "0.9"))
+
+        groups = self.read_csv("group_comparison")
+        self.assertEqual([row["type"] for row in groups], ["group", "gap"])
+        self.assertEqual(groups[1]["ci_low"], "-0.1")
+
+        run_info = {(row["section"], row["field"]): row["value"] for row in self.read_csv("run")}
+        self.assertEqual(run_info[("run", "label")], "中文標籤")
+        self.assertEqual(run_info[("run", "failed_generations")], "1")
+
+    def test_unknown_table_is_rejected(self):
+        response = self.client.get(f"/api/runs/{self.run.id}/export/", {"table": "nope"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
