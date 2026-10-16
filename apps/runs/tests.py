@@ -355,17 +355,21 @@ class RunExportTests(RunTestMixin, TestCase):
         self.assertTrue(response.content.startswith(b"\xef\xbb\xbf"))  # BOM for Excel
         return list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
 
-    def test_zip_contains_one_csv_per_table(self):
+    def test_workbook_has_one_sheet_per_table(self):
         import io
-        import zipfile
+
+        from openpyxl import load_workbook
 
         from .export import TABLES
 
         response = self.client.get(f"/api/runs/{self.run.id}/export/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response["Content-Type"], "application/zip")
-        names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
-        self.assertEqual(names, [file_name for file_name, _, _ in TABLES.values()])
+        self.assertTrue(response["Content-Disposition"].endswith('.xlsx"'))
+        workbook = load_workbook(io.BytesIO(response.content))
+        self.assertEqual(workbook.sheetnames, [title for _, title, _ in TABLES.values()])
+        responses = list(workbook["回應"].iter_rows(values_only=True))
+        header = responses[0]
+        self.assertEqual(responses[1][header.index("response_text")], "回答 one")
 
     def test_tables(self):
         responses = self.read_csv("responses")

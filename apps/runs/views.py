@@ -230,8 +230,8 @@ class LatestRunStatusView(APIView):
 
 
 class RunExportView(APIView):
-    """GET /api/runs/{id}/export/ -> ZIP with one CSV per table;
-    ?table=<key> -> that single CSV (keys: see apps.runs.export.TABLES)."""
+    """GET /api/runs/{id}/export/ -> one .xlsx with a worksheet per table;
+    ?table=<key> -> that single table as CSV (keys: see apps.runs.export.TABLES)."""
 
     def get(self, request, run_id):
         from django.http import HttpResponse
@@ -252,9 +252,9 @@ class RunExportView(APIView):
             file_name = f"run{run.id}_{file_name}"
             content_type = "text/csv; charset=utf-8"
         else:
-            content = export.build_zip(run)
-            file_name = f"run{run.id}_export.zip"
-            content_type = "application/zip"
+            content = export.build_workbook(run)
+            file_name = f"run{run.id}_export.xlsx"
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         response = HttpResponse(content, content_type=content_type)
         response["Content-Disposition"] = f'attachment; filename="{file_name}"'
         return response

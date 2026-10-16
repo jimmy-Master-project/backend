@@ -1,16 +1,15 @@
 # pyright: reportAttributeAccessIssue=false
-"""CSV export of everything a run produced, split into one table per category.
+"""Export of everything a run produced, split into one table per category.
 
-Every table is a list of rows (dicts); ``build_table`` returns the rows of one
-table and ``build_zip`` packs every table as its own CSV file. CSVs are written
-with a UTF-8 BOM so Excel opens Chinese text correctly.
+Every table is a list of rows (dicts). ``build_workbook`` writes one .xlsx file
+with every table as its own worksheet; ``build_table`` writes a single table as
+CSV (with a UTF-8 BOM so Excel opens Chinese text correctly).
 """
 from __future__ import annotations
 
 import csv
 import io
 import json
-import zipfile
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -310,10 +309,45 @@ def build_table(run: Any, key: str) -> tuple[str, bytes]:
     return file_name, to_csv_bytes(builder(run))
 
 
-def build_zip(run: Any) -> bytes:
+EXCEL_CELL_LIMIT = 32767
+
+
+def _excel_cell(value: Any) -> Any:
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    value = _cell(value)
+    if isinstance(value, str):
+        value = ILLEGAL_CHARACTERS_RE.sub("", value)[:EXCEL_CELL_LIMIT]
+    return value
+
+
+def build_workbook(run: Any) -> bytes:
+    """One .xlsx file, one worksheet per table (sheet name = Chinese title)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for _, title, builder in TABLES.values():
+        rows = builder(run)
+        sheet = workbook.create_sheet(title=title)
+        columns: list[str] = []
+        for row in rows:
+            columns += [key for key in row if key not in columns]
+        sheet.append(columns or ["(empty)"])
+        for row in rows:
+            sheet.append([_excel_cell(row.get(column)) for column in columns])
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        sheet.freeze_panes = "A2"
+        if columns:
+            sheet.auto_filter.ref = sheet.dimensions
+        for index, column in enumerate(columns, start=1):
+            longest = max(
+                [len(str(column))] + [len(str(row.get(column) or "")) for row in rows[:200]]
+            )
+            sheet.column_dimensions[get_column_letter(index)].width = min(max(longest + 2, 8), 60)
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for key in TABLES:
-            file_name, content = build_table(run, key)
-            archive.writestr(file_name, content)
+    workbook.save(buffer)
     return buffer.getvalue()
