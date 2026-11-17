@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     EvaluationPromptDetailView,
     EvaluationPromptListCreateView,
+    EvaluationPromptPopulationListView,
     EvaluationPromptPopulationView,
     GeneratePromptPopulationView,
     PromptDetailView,
@@ -11,6 +12,16 @@ from .views import (
 )
 
 urlpatterns = [
+    path(
+        "evaluations/<int:evaluation_id>/prompt-populations",
+        EvaluationPromptPopulationListView.as_view(),
+        name="prompt-population-list-no-slash",
+    ),
+    path(
+        "evaluations/<int:evaluation_id>/prompt-populations/",
+        EvaluationPromptPopulationListView.as_view(),
+        name="prompt-population-list",
+    ),
     path(
         "prompt-populations/generate",
         GeneratePromptPopulationView.as_view(),

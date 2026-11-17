@@ -47,7 +47,7 @@ apps/
     llms/           Target LLM Config + client
     runs/           EvaluationRun + 執行 service
     responses/      LLMResponse 查詢 API / 外部機器人回傳
-    fairness/       LangFair fairness metrics（非同步計算 + 快取）
+    fairness/       LangFair fairness metrics（非同步計算；每次請求重新計算，不重用先前結果）
     personas/       MatrAIx persona 代理 API
 services/           MatrAIx client、camelCase helper
 ```
@@ -61,6 +61,7 @@ services/           MatrAIx client、camelCase helper
 
 - persona 屬性 dict（`personaAttributes`、`attributes`、`filters` 的 key 是 MatrAIx dimension 名稱，如 `gender_identity`）。
 - `PromptSerializer.metadata` / `PromptPopulationSerializer.metadata`：內部儲存的原始 JSON blob（snake_case），原樣輸出。
+- `taskObjectives` 每筆中由初始 prompt agent 加上的欄位（`test_direction`、`technique`、`helm_scenario`、`bias_risk`、`is_control`…），以及 `test-plan` 回應中的 `directions` / `techniques` / `coverage` / `targetInfo` / `gapFill` 內容。
 - fairness-metrics 結果內 `suites.*` 由 LangFair 產生的 metric 名稱 / 原始輸出。
 - 列舉值（`text_generation`、`openai_compatible`、`missing_input`…）是值不是 key；DRF 的 `non_field_errors` 錯誤 key 保留。
 
@@ -68,26 +69,37 @@ services/           MatrAIx client、camelCase helper
 GET           /api/health/                                         # readiness probe → {"status": "ok"}
 
 # Evaluations
-GET/POST      /api/evaluations/                                    # POST 可為 multipart，上傳檔案欄位 `taskFile`
+GET/POST      /api/evaluations/                                    # POST 必填 useCaseDescription（Target LLM 描述）與 testDirections；
+                                                                   # 可為 multipart，`taskFile` 上傳測試方向檔
 GET/PUT/PATCH/DELETE /api/evaluations/{id}/
+POST          /api/evaluations/{id}/test-plan/                     # 初始 prompt agent：把建立時定義的 testDirections 依 Target LLM 描述
+                                                                   # （useCaseDescription）展開成問題方向（GHL 兩步 + HELM 策略）；
+                                                                   # body: modelName?, targetInfo{knownPolicies, systemPromptExcerpt,
+                                                                   # userPopulation, riskPriorities, whenStages}?, protectedAttributes?, totalDirections?(12),
+                                                                   # apply?(true)
+                                                                   # apply=true 時以結果取代 taskObjectives；同步執行（約 1 + 技術數 次 LLM 呼叫，
+                                                                   # 覆蓋補洞、控制組保底各最多 +1）
 
 # Prompt populations / prompts
 POST          /api/prompt-populations/generate/                    # 無 evaluation：body 需 `task`，會先建立 Evaluation
 POST          /api/evaluations/{id}/prompt-population/generate/    # 202 → PromptPopulation（同 GET /prompt-populations/{id}/）
+                                                                   # 不用虛擬人時可加 counterfactualTemplate: true（"I'm a woman./I'm a man." 模板配對）
 POST          /api/evaluations/{id}/prompt-populations/generate/   # 同上（別名）
 GET           /api/evaluations/{id}/prompt-population/             # 最新（優先 completed）population 摘要
+GET           /api/evaluations/{id}/prompt-populations/            # 全部 population 摘要（新到舊），含 name、generationMode、generationStats、createdAt
 GET/POST      /api/evaluations/{id}/prompts/                       # 最新 population 的 prompts；POST {text, category}
 PATCH/DELETE  /api/evaluations/{id}/prompts/{prompt_id}/           # PATCH {text?, category?}
-GET           /api/prompt-populations/{id}/                        # 輪詢生成狀態
+GET/PATCH     /api/prompt-populations/{id}/                        # 輪詢生成狀態；PATCH {name} 設定實驗條件名稱
 GET/POST      /api/prompt-populations/{id}/prompts/                # {count, results}；POST {text, category}
 GET/PUT/PATCH/DELETE /api/prompts/{id}/
 
 # Target LLM
 GET/PUT       /api/evaluations/{id}/llm-config/
+POST          /api/evaluations/{id}/llm-config/session-check/      # 一次 session 隔離金絲雀試驗（兩個獨立請求），回傳 leaked
 POST          /api/evaluations/{id}/llm-config/test-connection/
 
 # Runs
-POST          /api/evaluations/{id}/runs/                          # {promptPopulationId?, external?, resumeRunId?} → 201 RunStatus
+POST          /api/evaluations/{id}/runs/                          # {promptPopulationId?, external?, label?} → 201 RunStatus；不支援續跑（resumeRunId → 400）
 GET           /api/evaluations/{id}/runs/latest/                   # RunStatus（無 run 時 404）
 GET           /api/runs/{run_id}/status/                           # RunStatus
 
@@ -98,8 +110,8 @@ POST          /api/runs/{run_id}/responses/                        # 接收外�
 DELETE        /api/runs/{run_id}/responses/{response_id}/
 
 # Fairness (LangFair, 非同步)
-POST          /api/runs/{run_id}/fairness-metrics/                 # {suites?, options?} → 200（已快取）或 202（計算中）
-GET           /api/runs/{run_id}/fairness-metrics/?suite=a&suite=b&options=<json>   # 不計算，只回傳狀態/快取
+POST          /api/runs/{run_id}/fairness-metrics/                 # {suites?, options?} → 202，一律重新計算（相同輸入計算中則接續）
+GET           /api/runs/{run_id}/fairness-metrics/?suite=a&suite=b&options=<json>   # 不計算，回傳最近一次計算的結果（含 computedAt）或狀態
 
 # Personas（代理 MatrAIx，backend↔MatrAIx 維持 MatrAIx 自己的格式）
 GET           /api/persona/attributes/?pool=                       # {pool, attributes: [{key, label, category, description?, values?}]}
@@ -175,6 +187,6 @@ X-API-Key: your-shared-key
 
 ## 備註
 
-- `provider` 支援 `openai`（`https://api.openai.com/v1`）、`evaair`（長榮聊天機器人，經由`Crawler-bot/evaair-bot` 服務，預設 `http://127.0.0.1:8768/v1`）、`virgin`（Virgin Atlantic Concierge AI，經由`Crawler-bot/browser-bots` 服務以瀏覽器操作，預設 `http://127.0.0.1:8769/virgin/v1`）、`priceline`（Priceline Penny，經由`Crawler-bot/priceline-bot` 服務，預設 `http://127.0.0.1:8770/v1`）與 `openai_compatible`（vLLM、llama.cpp 等 OpenAI 相容服務），其他值會回 400。全部都走 OpenAI SDK；聊天機器人 provider 不會收到 OpenAI key。
+- `provider` 支援 `openai`（`https://api.openai.com/v1`）、`evaair`（長榮聊天機器人，經由`Crawler-bot/evaair-bot` 服務，預設 `http://127.0.0.1:8768/v1`）、`virgin`（Virgin Atlantic Concierge AI，經由`Crawler-bot/browser-bots` 服務以瀏覽器操作，預設 `http://127.0.0.1:8769/virgin/v1`）、`finnair`（Finnair Sisu，同樣經由 `Crawler-bot/browser-bots`，預設 `http://127.0.0.1:8769/finnair/v1`）、`chinaairlines`（華航 AI 客服）、`malaysia`（Malaysia Airlines Mavis）、`philippine`（Philippine Airlines myPAL）、`vietjet`（Vietjet Amy）、`starlux`（星宇航空 AI Agent）（這六個也經由 `Crawler-bot/browser-bots`，預設 `http://127.0.0.1:8769/<provider>/v1`）、`priceline`（Priceline Penny，經由`Crawler-bot/priceline-bot` 服務，預設 `http://127.0.0.1:8770/v1`）與 `openai_compatible`（vLLM、llama.cpp 等 OpenAI 相容服務），其他值會回 400。全部都走 OpenAI SDK；聊天機器人 provider 不會收到 OpenAI key。
 - Prompt Generation 與 Target LLM 呼叫都使用 OpenAI SDK 的 `base_url` 參數指向自架 endpoint。
 - EvaluationRun 用背景 thread 執行（非 Celery），符合 MVP 範圍；前端可用 `GET /api/runs/{id}/status/` 輪詢進度。

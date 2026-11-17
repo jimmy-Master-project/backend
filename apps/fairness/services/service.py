@@ -140,8 +140,8 @@ class LangFairMetricService:
         # report meaningless numbers for e.g. Chinese responses.
         language_check = check_english_responses(prepared.response_rows)
         results["languageCheck"] = language_check
-        # LangFair evaluators are cached per process and keep per-call state,
-        # so serialize computations.
+        # Evaluators are built fresh per computation; computations are still
+        # serialized so two of them never compete for the GPU / model memory.
         if not language_check["isEnglish"]:
             for suite in prepared.suites:
                 results["suites"][suite] = unsupported_language(suite, language_check)
@@ -157,11 +157,8 @@ class LangFairMetricService:
         suites: Sequence[str] | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Synchronously compute (or reuse a completed cached) result."""
+        """Synchronously compute a fresh result (never reuses a stored one) and store it."""
         prepared = self.prepare_run(run, suites, options)
-        cached = cache.find_result(run.id, prepared.cache_key)
-        if cached is not None and cached.status == cached.Status.COMPLETED:
-            return cache.sanitized_result(cached)
         results = self.compute(prepared)
         cache.store_completed(run.id, prepared.cache_key, results)
         return results

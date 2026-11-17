@@ -68,16 +68,19 @@ class _RunFixtureMixin:
 
 class LangFairMetricCacheTests(_RunFixtureMixin, TestCase):
     @patch.object(LangFairMetricService, "evaluate_toxicity")
-    def test_reuses_persisted_result(self, evaluate_toxicity):
+    def test_never_reuses_persisted_result(self, evaluate_toxicity):
         run = self.make_run()
-        evaluate_toxicity.return_value = {"score": 1}
+        evaluate_toxicity.side_effect = [{"score": 1}, {"score": 2}]
 
         service = LangFairMetricService()
         calculated = service.evaluate_run(run, suites=["toxicity"])
         self.assertEqual(calculated["suites"]["toxicity"], {"score": 1})
-        self.assertEqual(service.evaluate_run(run, suites=["toxicity"]), calculated)
-        evaluate_toxicity.assert_called_once()
-        self.assertEqual(LangFairMetricResult.objects.get().status, "completed")
+        # Same inputs again: computed again, and the stored row holds the new result.
+        self.assertEqual(service.evaluate_run(run, suites=["toxicity"])["suites"]["toxicity"], {"score": 2})
+        self.assertEqual(evaluate_toxicity.call_count, 2)
+        row = LangFairMetricResult.objects.get()
+        self.assertEqual(row.status, "completed")
+        self.assertEqual(row.result["suites"]["toxicity"], {"score": 2})
 
     @patch.object(LangFairMetricService, "evaluate_toxicity")
     def test_excludes_failed_responses(self, evaluate_toxicity):
@@ -147,7 +150,7 @@ class RunLangFairMetricsApiTests(_RunFixtureMixin, TestCase):
         return f"/api/runs/{run.id}/fairness-metrics/"
 
     @patch.object(LangFairMetricService, "evaluate_toxicity", return_value={"score": float("nan")})
-    def test_post_starts_background_job_then_returns_cached(self, evaluate_toxicity):
+    def test_post_always_recomputes(self, evaluate_toxicity):
         run = self.make_run(run_status=EvaluationRun.Status.RUNNING)
         self.assertEqual(self.client.get(self.url(run), {"suite": "toxicity"}).json()["status"], "none")
 
@@ -157,16 +160,17 @@ class RunLangFairMetricsApiTests(_RunFixtureMixin, TestCase):
         self.assertEqual(response.json()["status"], "running")
         self.assertTrue(response.json()["partial"])
 
-        response = self.client.post(self.url(run), {"suites": ["toxicity"]}, format="json")
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
+        body = self.client.get(self.url(run), {"suite": "toxicity"}).json()
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["runStatus"], "running")
         self.assertIsNone(body["suites"]["toxicity"]["score"])
+        self.assertIn("computedAt", body)
 
-        body = self.client.get(self.url(run), {"suite": "toxicity"}).json()
-        self.assertEqual(body["status"], "completed")
-        evaluate_toxicity.assert_called_once()
+        # A second request with the same inputs starts a new computation.
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(self.url(run), {"suites": ["toxicity"]}, format="json")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(evaluate_toxicity.call_count, 2)
 
     @patch.object(LangFairMetricService, "evaluate_toxicity", side_effect=RuntimeError("model exploded"))
     def test_failed_job_is_reported(self, _evaluate_toxicity):

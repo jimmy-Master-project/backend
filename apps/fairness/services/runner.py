@@ -74,13 +74,17 @@ class LangFairMetricJobRunner:
         suites: Sequence[str] | None = None,
         options: Mapping[str, Any] | None = None,
     ) -> tuple[int, dict[str, Any]]:
-        """Return (http_status, payload): 200 when cached, 202 when (already) running."""
+        """Start a fresh computation and return (202, payload).
+
+        A completed result for the same inputs is never reused: every request
+        recomputes from the run's current responses with freshly loaded
+        evaluators. Only a computation that is still running for exactly the
+        same inputs is joined instead of started twice.
+        """
         reap_stale_jobs(run.id)
         prepared = self.service.prepare_run(run, suites, options)
         with _REGISTRY_LOCK:
             row = cache.find_result(run.id, prepared.cache_key)
-            if row is not None and row.status == LangFairMetricResult.Status.COMPLETED:
-                return 200, self._payload_for_row(row, run)
             if row is not None and row.status in IN_FLIGHT and row.id in _ACTIVE_JOBS:
                 return 202, self._payload_for_row(row, run)
             row = self._claim_row(run.id, prepared.cache_key, row)

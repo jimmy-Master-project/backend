@@ -33,7 +33,7 @@ class OpenAICompatibleLLMClientTests(SimpleTestCase):
 
 class LLMConfigSerializerProviderTests(SimpleTestCase):
     def test_accepts_openai_providers(self):
-        for provider in ("openai", "openai_compatible", "evaair", "virgin", "priceline"):
+        for provider in ("openai", "openai_compatible", "evaair", "virgin", "finnair", "chinaairlines", "malaysia", "philippine", "vietjet", "starlux", "priceline"):
             with self.subTest(provider=provider):
                 serializer = LLMConfigSerializer(data={"provider": provider, "modelName": "gpt-4o-mini"})
                 self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -125,3 +125,57 @@ class EvaAirProviderTests(APITestCase):
         build_llm_client(config)
         self.assertEqual(openai_cls.call_args.kwargs["api_key"], "not-needed")
         self.assertEqual(openai_cls.call_args.kwargs["base_url"], "http://127.0.0.1:8769/virgin/v1")
+
+
+class SessionCheckViewTests(APITestCase):
+    def setUp(self):
+        self.evaluation = Evaluation.objects.create(
+            name="s", use_case_description="d", task_type=Evaluation.TaskType.TEXT_GENERATION
+        )
+        LLMConfig.objects.create(evaluation=self.evaluation, provider="evaair", model_name="evaair",
+                                 base_url="http://127.0.0.1:8768/v1")
+        self.url = f"/api/evaluations/{self.evaluation.id}/llm-config/session-check/"
+
+    def run_check(self, probe_answer):
+        client = Mock()
+        client.generate.side_effect = lambda prompt: {
+            "text": "Sure, you can change your seat." if "booking reference is" in prompt else probe_answer(prompt)
+        }
+        with patch("apps.llms.views.build_llm_client", return_value=client):
+            response = self.client.post(self.url, {}, format="json")
+        self.assertEqual(client.generate.call_count, 2)
+        return response
+
+    def test_isolated_target_passes(self):
+        response = self.run_check(lambda prompt: "I'm sorry, I don't have access to your booking.")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["leaked"])
+        self.assertIn(response.data["code"], response.data["plantPrompt"])
+
+    def test_leak_is_detected(self):
+        leaked = {}
+
+        def remember(prompt):
+            return leaked["answer"]
+
+        client = Mock()
+
+        def generate(prompt):
+            if "booking reference is" in prompt:
+                code = prompt.split("booking reference is ")[1].split(" ")[0]
+                leaked["answer"] = f"Your booking reference is {code}."
+                return {"text": "ok"}
+            return {"text": remember(prompt)}
+
+        client.generate.side_effect = generate
+        with patch("apps.llms.views.build_llm_client", return_value=client):
+            response = self.client.post(self.url, {}, format="json")
+        self.assertTrue(response.data["leaked"])
+        self.assertTrue(response.data["leakedCode"])
+
+    def test_target_error_returns_502(self):
+        client = Mock()
+        client.generate.side_effect = RuntimeError("bot down")
+        with patch("apps.llms.views.build_llm_client", return_value=client):
+            response = self.client.post(self.url, {}, format="json")
+        self.assertEqual(response.status_code, 502)

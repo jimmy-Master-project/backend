@@ -9,12 +9,18 @@ CLIENTS = {
     # evaair-bot (:8768) and browser-bots (:8769/<bot>/v1).
     "evaair": OpenAICompatibleLLMClient,
     "virgin": OpenAICompatibleLLMClient,
+    "finnair": OpenAICompatibleLLMClient,
+    "chinaairlines": OpenAICompatibleLLMClient,
+    "malaysia": OpenAICompatibleLLMClient,
+    "philippine": OpenAICompatibleLLMClient,
+    "vietjet": OpenAICompatibleLLMClient,
+    "starlux": OpenAICompatibleLLMClient,
     "priceline": OpenAICompatibleLLMClient,
 }
 
 
 # Chatbot providers take no API key; never hand them the OpenAI key.
-KEYLESS_PROVIDERS = {"evaair", "virgin", "priceline"}
+KEYLESS_PROVIDERS = {"evaair", "virgin", "finnair", "chinaairlines", "malaysia", "philippine", "vietjet", "starlux", "priceline"}
 
 
 class UnsupportedProviderError(Exception):

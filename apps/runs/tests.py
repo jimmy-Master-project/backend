@@ -68,18 +68,15 @@ class EvaluationRunServiceTests(RunTestMixin, TestCase):
         run.refresh_from_db()
         return run
 
-    def test_resume_recomputes_progress_from_distinct_prompts(self):
-        run = self.make_run(status=EvaluationRun.Status.FAILED)
-        LLMResponse.objects.create(
-            run=run, prompt=self.prompts[0], generation_index=1, response_text="kept"
-        )
+    def test_run_executes_every_generation(self):
+        run = self.make_run()
         client = Mock()
         client.generate.return_value = _result()
 
         run = self.execute(run, client)
 
         self.assertEqual(run.status, EvaluationRun.Status.COMPLETED)
-        self.assertEqual(client.generate.call_count, 5)
+        self.assertEqual(client.generate.call_count, 6)
         self.assertEqual(run.completed_generations, 6)
         self.assertEqual(run.completed_prompts, 3)
         self.assertEqual(run.responses.count(), 6)
@@ -111,21 +108,6 @@ class EvaluationRunServiceTests(RunTestMixin, TestCase):
                 "llmSnapshot", "promptPopulationId",
             },
         )
-
-    def test_resume_retries_failed_generations(self):
-        run = self.make_run(status=EvaluationRun.Status.FAILED)
-        LLMResponse.objects.create(
-            run=run, prompt=self.prompts[0], generation_index=1, response_text="", error="boom"
-        )
-        client = Mock()
-        client.generate.return_value = _result("retried")
-
-        run = self.execute(run, client)
-
-        self.assertEqual(client.generate.call_count, 6)
-        row = run.responses.get(prompt=self.prompts[0], generation_index=1)
-        self.assertIsNone(row.error)
-        self.assertEqual(row.response_text, "retried")
 
     @override_settings(TARGET_LLM_FAILFAST_GENERATIONS=3)
     def test_systemic_failure_fails_the_run(self):
@@ -204,24 +186,16 @@ class StartRunViewTests(RunTestMixin, TestCase):
     def url(self):
         return f"/api/evaluations/{self.evaluation.id}/runs/"
 
-    def test_resume_failed_run(self, start):
+    def test_resume_is_rejected(self, start):
         run = self.make_run(status=EvaluationRun.Status.FAILED, error_message="boom")
 
         response = self.client.post(self.url(), {"resumeRunId": run.id}, format="json")
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("resumeRunId", response.data)
         run.refresh_from_db()
-        self.assertEqual(run.status, EvaluationRun.Status.RUNNING)
-        self.assertEqual(run.error_message, "")
-        start.assert_called_once()
-
-    def test_resume_non_failed_run_conflicts(self, start):
-        run = self.make_run(status=EvaluationRun.Status.COMPLETED)
-
-        response = self.client.post(self.url(), {"resumeRunId": run.id}, format="json")
-
-        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertIn("error", response.data)
+        self.assertEqual(run.status, EvaluationRun.Status.FAILED)
+        self.assertEqual(EvaluationRun.objects.count(), 1)
         start.assert_not_called()
 
     def test_start_while_run_in_progress_conflicts(self, start):

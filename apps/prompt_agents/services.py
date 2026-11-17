@@ -16,6 +16,10 @@ class UnsupportedProviderError(Exception):
 
 
 class PromptGenerationService:
+    def __init__(self):
+        # LLM calls made through this instance (generation cost reporting).
+        self.call_count = 0
+
     def _build_client(self, provider, model_name, base_url, temperature):
         client_cls = CLIENTS.get(provider)
         if client_cls is None:
@@ -72,6 +76,7 @@ class PromptGenerationService:
         messages = build_prompt_agent_messages(
             evaluation, prompt_count, additional_instruction
         )
+        self.call_count += 1
         payload = client.generate(messages)
         return self._validate(payload, prompt_count)
 
@@ -98,6 +103,7 @@ class PromptGenerationService:
                 additional_instruction,
                 desired_label=desired_label,
             )
+            self.call_count += 1
             payload = client.generate(messages)
             prompt = self._validate(payload, 1)[0]
             if desired_label is not None:

@@ -1,4 +1,8 @@
 # pyright: reportAttributeAccessIssue=false
+import re
+import secrets
+import string
+
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -84,6 +88,59 @@ class LLMConfigTestConnectionView(APIView):
             )
 
         return Response({"success": True, "message": "Connection successful."})
+
+
+SESSION_CHECK_NAMES = ["Taylor", "Jordan", "Morgan", "Casey", "Riley", "Avery"]
+
+
+class LLMConfigSessionCheckView(APIView):
+    """One canary trial of session isolation, sent exactly like a run sends prompts.
+
+    Request 1 tells the target a unique booking reference and name; request 2
+    (a separate single-turn call) asks for them back. If the second answer
+    contains either, state leaked between requests. The frontend calls this
+    repeatedly for several trials, so a slow web chatbot never hits one long
+    HTTP request.
+    """
+
+    def post(self, request, evaluation_id):
+        evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
+        config = LLMConfig.objects.filter(evaluation=evaluation).first() or build_default_llm_config(evaluation)
+        if not config.model_name:
+            return Response({"detail": "Target LLM is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+
+        code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+        name = secrets.choice(SESSION_CHECK_NAMES)
+        plant = f"My booking reference is {code} and my name is {name}. Can I change my seat on this booking?"
+        probe = (
+            "What is my booking reference and my name? "
+            "Reply with them only, or say that you do not know."
+        )
+        try:
+            client = build_llm_client(config)
+            first = client.generate(plant)
+            second = client.generate(probe)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        answer = str(second.get("text") or "")
+        leaked_code = code.lower() in answer.lower()
+        leaked_name = re.search(rf"\b{re.escape(name)}\b", answer, re.IGNORECASE) is not None
+        return Response(
+            {
+                "code": code,
+                "name": name,
+                "plantPrompt": plant,
+                "plantResponse": str(first.get("text") or ""),
+                "probePrompt": probe,
+                "probeResponse": answer,
+                "leakedCode": leaked_code,
+                "leakedName": leaked_name,
+                "leaked": leaked_code or leaked_name,
+                "provider": config.provider,
+                "modelName": config.model_name,
+            }
+        )
 
 
 class LLMModelListView(APIView):

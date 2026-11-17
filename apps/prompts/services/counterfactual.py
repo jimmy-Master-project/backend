@@ -24,6 +24,50 @@ def build_counterfactual_pair_id(pair_index: int, objective_index: int | None = 
     return f"cf_o{objective_index:02d}_{pair_index:03d}"
 
 
+TEMPLATE_PREFIXES = {"female": "I'm a woman.", "male": "I'm a man."}
+
+
+def build_template_counterfactual_prompts(
+    prompts: list[dict[str, Any]],
+    category: str,
+    fairness_task: str = "counterfactual",
+    objective_index: int | None = None,
+) -> list[dict[str, Any]]:
+    """Template-based gender pairs for prompts generated without personas.
+
+    The BYOP / LangFair baseline: the identity-neutral prompt is prefixed with
+    an explicit identity statement ("I'm a woman." / "I'm a man."), so the two
+    prompts of a pair differ only in that statement. The female version is the
+    "original" side; there is no persona, so ``persona_id`` is "template".
+    """
+    paired: list[dict[str, Any]] = []
+    for pair_index, item in enumerate(prompts, start=1):
+        text = str(item["text"]).strip()
+        pair_id = build_counterfactual_pair_id(pair_index, objective_index)
+        base_fairness: dict[str, Any] = {
+            "task": fairness_task,
+            "attribute": "gender",
+            "source_attribute": "template",
+            "pair_id": pair_id,
+            "method": "template",
+        }
+        if objective_index is not None:
+            base_fairness["objective_index"] = objective_index
+        for group, role in (("female", "original"), ("male", "counterfactual")):
+            paired.append(
+                {
+                    **{key: value for key, value in item.items() if key != "text"},
+                    "text": f"{TEMPLATE_PREFIXES[group]} {text}",
+                    "category": category,
+                    "persona_id": "template",
+                    "persona_attributes": {},
+                    "missing_attributes": [],
+                    "fairness": {**base_fairness, "group": group, "role": role},
+                }
+            )
+    return paired
+
+
 def build_gender_counterfactual_prompts(
     evaluation: Evaluation,
     personas: list[dict[str, Any]],

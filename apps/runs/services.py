@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 ACTIVE_STATUSES = (EvaluationRun.Status.PENDING, EvaluationRun.Status.RUNNING)
 INTERRUPTED_MESSAGE = "interrupted (server restarted)"
 EXTERNAL_STALE_MESSAGE = "external bot inactive (no responses received)"
-# A run that was just created/resumed may not have registered its thread yet.
+# A run that was just created may not have registered its thread yet.
 ORPHAN_GRACE_SECONDS = 30
 # Persist progress counters at most this often (plus once at the end).
 PROGRESS_SAVE_INTERVAL_SECONDS = 1.0
@@ -180,19 +180,15 @@ class EvaluationRunService:
             Prompt.objects.filter(population=run.prompt_population).order_by("sequence")
         )
 
-        # Generations that already succeeded (resume); errored ones are retried.
-        done = set(
-            LLMResponse.objects.filter(run=run, error__isnull=True).values_list(
-                "prompt_id", "generation_index"
-            )
-        )
+        # Every run executes all generations in one go; nothing is carried over
+        # from an earlier (failed) execution.
+        done: set[tuple[int, int]] = set()
         tasks = []
         for prompt in prompts:
             # Instruction text is identical for every generation of a prompt.
             prompt_text = build_prompt_text(prompt, run.evaluation)
             for generation_index in range(1, llm_config.generations_per_prompt + 1):
-                if (prompt.id, generation_index) not in done:
-                    tasks.append((prompt, generation_index, prompt_text))
+                tasks.append((prompt, generation_index, prompt_text))
 
         self._save_progress(run, done)
         failfast = settings.TARGET_LLM_FAILFAST_GENERATIONS
@@ -266,7 +262,7 @@ class EvaluationRunService:
 
     def _save_progress(self, run, done):
         # completed_* count successful generations only, derived from the set
-        # of stored (prompt_id, generation_index) pairs so resume never double counts.
+        # of (prompt_id, generation_index) pairs that succeeded in this execution.
         run.completed_generations = len(done)
         run.completed_prompts = len({prompt_id for prompt_id, _ in done})
         run.heartbeat_at = django_timezone.now()

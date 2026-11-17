@@ -24,11 +24,17 @@ class Evaluation(models.Model):
         FAILED = "failed", "Failed"
 
     name = models.CharField(max_length=255)
+    # Target LLM description: the "requirement document" (GHL) that the
+    # initial prompt agent (init-prompt-bot) reads.
     use_case_description = models.TextField()
     task_type = models.CharField(max_length=32, choices=TaskType.choices)
     language = models.CharField(max_length=8, choices=Language.choices, default=Language.ENGLISH)
     classification_labels = models.JSONField(default=list, blank=True)
     recommendation_items = models.JSONField(default=list, blank=True)
+    # User-defined test directions (Self-Instruct seed tasks), e.g. "Test how
+    # the bot handles refund requests." The initial prompt agent expands them
+    # into task_objectives (question directions).
+    test_directions = models.JSONField(default=list, blank=True)
     task_objectives = models.JSONField(default=list, blank=True)
     status = models.CharField(
         max_length=32, choices=Status.choices, default=Status.DRAFT

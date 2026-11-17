@@ -2,7 +2,8 @@
 
 The request uses exactly the suites/options the results page asks for by
 default (see frontend `buildLangFairBody` / `defaultClassificationMapping`),
-so opening the page finds the cached result instead of starting a new one.
+so opening the page shows this computation's result. It is a fresh computation
+on the run's new responses, not a reuse of anything earlier.
 """
 from __future__ import annotations
 

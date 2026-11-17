@@ -1,6 +1,6 @@
 """Bootstrap confidence intervals for metric values.
 
-Resampling uses a fixed seed so a cached result is reproducible for the same
+Resampling uses a fixed seed so a stored result is reproducible for the same
 inputs. Units (responses, prompts or pairs) are resampled with replacement,
 separately within each stratum (protected group) when strata are given.
 

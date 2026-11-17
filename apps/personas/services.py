@@ -97,6 +97,28 @@ class PersonaService:
             "partial": len(personas) < sample_size,
         }
 
+    def sample_persona_set(
+        self,
+        sample_size: int,
+        filters: dict[str, list[str]],
+        seed: int,
+        pool: str | None = None,
+    ) -> dict[str, Any]:
+        """Random sample of exactly `sample_size` distinct personas matching every filter.
+
+        Filter keys are also required to be present on each persona, so a
+        persona without e.g. `occupation` never slips past an occupation filter.
+        """
+        result = self.sample_projected_personas(
+            sample_size=sample_size,
+            selected_attributes=list(filters),
+            pool=pool,
+            filters=filters,
+            seed=seed,
+            allow_partial=False,
+        )
+        return {"pool": result["pool"], "personas": result["personas"]}
+
     def list_personas(
         self,
         limit: int,

@@ -70,6 +70,8 @@ def _serialize_persona_config(persona):
         "stratify": persona.get("stratify"),
         "seed": persona.get("sampling_seed"),
         "personaIds": persona.get("persona_ids") or [],
+        "personaSetId": persona.get("persona_set_id"),
+        "personaSetName": persona.get("persona_set_name") or "",
         "counterfactualEnabled": bool(persona.get("counterfactual_enabled")),
         "uniquePersonaCount": persona.get("unique_persona_count"),
         "reusedPersonas": bool(persona.get("reused_personas")),
@@ -88,6 +90,8 @@ def _generating_population_id(evaluation):
 def _serialize_population_summary(population, generating_population_id=None):
     summary = {
         "populationId": None,
+        # Experiment condition label, e.g. "G4 Proposed" (editable).
+        "name": "",
         "status": None,
         "errorMessage": "",
         "generationModel": "",
@@ -101,6 +105,12 @@ def _serialize_population_summary(population, generating_population_id=None):
         "stratifiedBy": None,
         "seed": None,
         "fairness": {},
+        # How the prompts were generated: persona_counterfactual_word_swap,
+        # persona_conditioned_generation, template_counterfactual or "" (plain).
+        "generationMode": "",
+        # {llmCalls, seconds, startedAt, finishedAt}; empty for older populations.
+        "generationStats": {},
+        "createdAt": None,
         # Newest population still being generated (may be newer than the one
         # summarized here); lets a reloaded client resume polling it.
         "generatingPopulationId": generating_population_id,
@@ -113,6 +123,7 @@ def _serialize_population_summary(population, generating_population_id=None):
     summary.update(
         {
             "populationId": population.id,
+            "name": population.name,
             "status": population.status,
             "errorMessage": population.error_message,
             "generationModel": population.model_name,
@@ -126,6 +137,9 @@ def _serialize_population_summary(population, generating_population_id=None):
             "stratifiedBy": persona.get("stratify"),
             "seed": persona.get("sampling_seed"),
             "fairness": camelize_keys(fairness),
+            "generationMode": str((metadata.get("prompt_generator") or {}).get("mode") or ""),
+            "generationStats": camelize_keys(metadata.get("generation_stats") or {}),
+            "createdAt": population.created_at.isoformat() if population.created_at else None,
         }
     )
     return summary
@@ -155,10 +169,10 @@ class GeneratePromptPopulationView(APIView):
 
         objective_count = len(get_task_objectives(evaluation))
         persona = data.get("persona") or {}
-        counterfactual = bool(persona.get("enabled")) and (
+        counterfactual = (bool(persona.get("enabled")) and (
             bool(persona.get("counterfactual_enabled"))
             or any(attribute in {"gender", "gender_identity"} for attribute in persona.get("selected_attributes", []))
-        )
+        )) or (not persona.get("enabled") and bool(data.get("counterfactual_template")))
         requested_prompt_count = data["prompt_count"] * objective_count * (2 if counterfactual else 1)
         population = PromptPopulation.objects.create(
             evaluation=evaluation,
@@ -193,6 +207,17 @@ class PromptPopulationDetailView(APIView):
             population.refresh_from_db()
         return Response(PromptPopulationSerializer(population).data)
 
+    def patch(self, request, pk):
+        """Only the name is editable: it labels the experiment condition (e.g. "G4 Proposed")."""
+        population = get_object_or_404(PromptPopulation, pk=pk)
+        name = request.data.get("name")
+        if not isinstance(name, str) or len(name) > 255:
+            return Response({"name": "A string of at most 255 characters is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        population.name = name.strip()
+        population.save(update_fields=["name"])
+        return Response(PromptPopulationSerializer(population).data)
+
 
 class EvaluationPromptPopulationView(APIView):
     def get(self, request, evaluation_id):
@@ -203,6 +228,15 @@ class EvaluationPromptPopulationView(APIView):
                 _latest_population(evaluation), _generating_population_id(evaluation)
             )
         )
+
+
+class EvaluationPromptPopulationListView(APIView):
+    """Every prompt population of an evaluation, newest first (for comparing generation methods)."""
+
+    def get(self, request, evaluation_id):
+        evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
+        populations = evaluation.prompt_populations.order_by("-created_at", "-id")
+        return Response([_serialize_population_summary(population) for population in populations])
 
 
 class EvaluationPromptListCreateView(APIView):

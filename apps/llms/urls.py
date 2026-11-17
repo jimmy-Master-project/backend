@@ -1,8 +1,13 @@
 from django.urls import path
 
-from .views import LLMConfigTestConnectionView, LLMConfigView, LLMModelListView
+from .views import LLMConfigSessionCheckView, LLMConfigTestConnectionView, LLMConfigView, LLMModelListView
 
 urlpatterns = [
+    path(
+        "evaluations/<int:evaluation_id>/llm-config/session-check/",
+        LLMConfigSessionCheckView.as_view(),
+        name="llm-config-session-check",
+    ),
     path(
         "evaluations/<int:evaluation_id>/llm-config/models/",
         LLMModelListView.as_view(),

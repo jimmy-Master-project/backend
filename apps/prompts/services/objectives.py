@@ -13,7 +13,12 @@ def get_task_objectives(evaluation: Evaluation) -> list[str]:
         for item in objectives
         if isinstance(item, dict) and str(item.get("objective", "")).strip()
     ]
-    return normalized or [evaluation.use_case_description]
+    if normalized:
+        return normalized
+    # Before the initial prompt agent has run, fall back to the user's test
+    # directions, then (older evaluations) to the target description.
+    seeds = [str(item).strip() for item in getattr(evaluation, "test_directions", None) or [] if str(item).strip()]
+    return seeds or [evaluation.use_case_description]
 
 
 def evaluation_for_objective(evaluation: Evaluation, objective: str) -> Evaluation:

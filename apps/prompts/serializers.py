@@ -94,6 +94,11 @@ class PersonaConfigSerializer(serializers.Serializer):
         max_length=MAX_PROMPT_COUNT,
         source="persona_ids",
     )
+    # Saved persona list (apps.personas.PersonaSet) the persona ids came from;
+    # recorded so populations can be compared by the list they used.
+    personaSetId = serializers.IntegerField(
+        required=False, allow_null=True, default=None, source="persona_set_id"
+    )
 
 
 class GeneratePromptPopulationSerializer(serializers.Serializer):
@@ -107,6 +112,11 @@ class GeneratePromptPopulationSerializer(serializers.Serializer):
         required=False, allow_blank=True, default="", source="additional_instruction"
     )
     persona = PersonaConfigSerializer(required=False)
+    # Without personas: pair each prompt as "I'm a woman. ..." / "I'm a man. ..."
+    # (template baseline for comparing prompt-generation methods).
+    counterfactualTemplate = serializers.BooleanField(
+        required=False, default=False, source="counterfactual_template"
+    )
 
     def validate(self, attrs):
         attrs["provider"] = attrs.get("provider") or settings.PROMPT_AGENT_PROVIDER

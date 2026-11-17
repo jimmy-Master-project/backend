@@ -467,3 +467,137 @@ class PromptPopulationApiShapeTests(TestCase):
         self.assertEqual(prompt["personaAttributes"], {"gender_identity": "Woman"})
         self.assertEqual(prompt["fairness"]["pairId"], "cf_001")
         self.assertEqual(prompt["fairness"]["sourcePersonaId"], "0042")
+
+
+class ExperimentSupportTests(TestCase):
+    """Template pairs, generation cost and the population list (experiment workspace)."""
+
+    def setUp(self):
+        self.evaluation = Evaluation.objects.create(
+            name="Airline", use_case_description="Airline customer service",
+            task_type=Evaluation.TaskType.TEXT_GENERATION,
+            task_objectives=[{"objective": "Refund"}, {"objective": "Delay"}],
+        )
+
+    def make_population(self, **kwargs):
+        defaults = {"evaluation": self.evaluation, "provider": "test", "model_name": "agent",
+                    "requested_prompt_count": 2}
+        return PromptPopulation.objects.create(**{**defaults, **kwargs})
+
+    def test_template_pairs_without_personas(self):
+        population = self.make_population()
+        with patch("apps.prompts.services.generation.PromptGenerationService") as service_class:
+            service_class.return_value.generate_population.return_value = [
+                {"text": "Can I get a refund?", "category": ""},
+                {"text": "What are my options?", "category": ""},
+            ]
+            prompts = PromptPopulationGenerationService().generate(
+                self.evaluation,
+                {"provider": "test", "model_name": "agent", "prompt_count": 2, "temperature": 0.5,
+                 "counterfactual_template": True},
+                population,
+            )
+
+        self.assertEqual(len(prompts), 8)  # 2 objectives x 2 prompts x 2 sides
+        first, second = prompts[0], prompts[1]
+        self.assertEqual(first["text"], "I'm a woman. Can I get a refund?")
+        self.assertEqual(second["text"], "I'm a man. Can I get a refund?")
+        self.assertEqual(first["fairness"]["pair_id"], second["fairness"]["pair_id"])
+        self.assertEqual((first["fairness"]["group"], first["fairness"]["role"]), ("female", "original"))
+        self.assertEqual((second["fairness"]["group"], second["fairness"]["role"]), ("male", "counterfactual"))
+        # Pair ids stay unique across objectives.
+        self.assertEqual(len({p["fairness"]["pair_id"] for p in prompts}), 4)
+        population.refresh_from_db()
+        self.assertEqual(population.metadata["prompt_generator"]["mode"], "template_counterfactual")
+        self.assertEqual(population.metadata["fairness"]["method"], "template")
+
+    def test_plain_generation_has_no_pairs_by_default(self):
+        population = self.make_population()
+        with patch("apps.prompts.services.generation.PromptGenerationService") as service_class:
+            service_class.return_value.generate_population.return_value = [{"text": "Hi", "category": ""}]
+            prompts = PromptPopulationGenerationService().generate(
+                self.evaluation,
+                {"provider": "test", "model_name": "agent", "prompt_count": 1, "temperature": 0.5},
+                population,
+            )
+        self.assertEqual([p["text"] for p in prompts], ["Hi", "Hi"])
+        self.assertNotIn("fairness", prompts[0])
+
+    def test_runner_records_generation_stats(self):
+        from .services.generation import PromptPopulationGenerationRunner
+
+        population = self.make_population(status=PromptPopulation.Status.GENERATING)
+        with patch("apps.prompts.services.generation.PromptGenerationService") as service_class:
+            service_class.return_value.generate_population.return_value = [{"text": "Hi", "category": ""}]
+            service_class.return_value.call_count = 2
+            PromptPopulationGenerationRunner()._execute(
+                self.evaluation.id,
+                {"provider": "test", "model_name": "agent", "prompt_count": 1, "temperature": 0.5},
+                population.id,
+            )
+        population.refresh_from_db()
+        stats = population.metadata["generation_stats"]
+        self.assertEqual(population.status, PromptPopulation.Status.COMPLETED)
+        self.assertEqual(stats["llm_calls"], 2)
+        self.assertGreaterEqual(stats["seconds"], 0)
+        self.assertIn("finished_at", stats)
+
+    def test_call_count_counts_each_llm_request(self):
+        from apps.prompt_agents.services import PromptGenerationService
+
+        service = PromptGenerationService()
+        client = Mock()
+        client.generate.return_value = {"prompts": [{"text": "q", "category": ""}]}
+        with patch.object(service, "_build_client", return_value=client):
+            service.generate_for_personas(
+                evaluation=self.evaluation, provider="openai", model_name="m", temperature=0.5,
+                personas=[{"persona_id": "a", "attributes": {}}, {"persona_id": "b", "attributes": {}}],
+            )
+        self.assertEqual(service.call_count, 2)
+
+    def test_population_list_and_summary_fields(self):
+        from rest_framework.test import APIClient
+
+        old = self.make_population(status=PromptPopulation.Status.COMPLETED)
+        new = self.make_population(
+            status=PromptPopulation.Status.COMPLETED,
+            metadata={"prompt_generator": {"mode": "template_counterfactual"},
+                      "generation_stats": {"llm_calls": 3, "seconds": 1.5}},
+        )
+        response = APIClient().get(f"/api/evaluations/{self.evaluation.id}/prompt-populations/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["populationId"] for item in response.json()], [new.id, old.id])
+        self.assertEqual(response.json()[0]["generationMode"], "template_counterfactual")
+        self.assertEqual(response.json()[0]["generationStats"], {"llmCalls": 3, "seconds": 1.5})
+        self.assertIsNotNone(response.json()[0]["createdAt"])
+
+    def test_template_request_doubles_requested_count(self):
+        from rest_framework.test import APIClient
+
+        with patch("apps.prompts.views.PromptPopulationGenerationRunner") as runner:
+            response = APIClient().post(
+                f"/api/evaluations/{self.evaluation.id}/prompt-population/generate/",
+                {"modelName": "m", "promptCount": 3, "counterfactualTemplate": True},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 202, response.content)
+        self.assertEqual(response.json()["requestedPromptCount"], 12)
+        self.assertTrue(runner.return_value.start.call_args.args[1]["counterfactual_template"])
+
+
+class PopulationNameTests(TestCase):
+    def test_patch_name_labels_the_condition(self):
+        from rest_framework.test import APIClient
+
+        evaluation = Evaluation.objects.create(name="x", use_case_description="x",
+                                               task_type=Evaluation.TaskType.TEXT_GENERATION)
+        population = PromptPopulation.objects.create(evaluation=evaluation, provider="p", model_name="m",
+                                                     requested_prompt_count=1)
+        client = APIClient()
+        response = client.patch(f"/api/prompt-populations/{population.id}/", {"name": " G4 Proposed "}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["name"], "G4 Proposed")
+        listed = client.get(f"/api/evaluations/{evaluation.id}/prompt-populations/").json()
+        self.assertEqual(listed[0]["name"], "G4 Proposed")
+        self.assertEqual(client.patch(f"/api/prompt-populations/{population.id}/", {"name": 3}, format="json").status_code, 400)

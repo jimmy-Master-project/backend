@@ -24,8 +24,17 @@ def llm_snapshot(llm_config: LLMConfig | None, external: bool = False) -> dict:
 class StartRunSerializer(serializers.Serializer):
     promptPopulationId = serializers.IntegerField(required=False, source="prompt_population_id")
     external = serializers.BooleanField(default=False)
-    resumeRunId = serializers.IntegerField(required=False, source="resume_run_id")
     label = serializers.CharField(required=False, allow_blank=True, max_length=200, default="")
+
+    def validate(self, attrs):
+        # Resuming was removed on purpose (experiment protocol): mixing responses
+        # from two executions of a run, possibly days apart, could bias results.
+        # Reject instead of silently starting a new run.
+        if "resumeRunId" in self.initial_data:
+            raise serializers.ValidationError(
+                {"resumeRunId": "Resuming runs is not supported. Start a new run instead."}
+            )
+        return attrs
 
 
 class RunUpdateSerializer(serializers.Serializer):

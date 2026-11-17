@@ -2,12 +2,12 @@
 """Run-level LangFair metrics API (asynchronous).
 
 POST /api/runs/{id}/fairness-metrics/  body: {"suites"?: [...], "options"?: {...}}
-    200 {...payload, "status": "completed", "runStatus", "partial", "computedAt"}
-        when a completed result for exactly these inputs is cached;
-    202 {"status": "running", "runId", "runStatus", "partial"} otherwise
-        (starts a background computation unless one is already running).
+    202 {"status": "running", "runId", "runStatus", "partial"}: always starts a
+        fresh background computation (a previous result is never reused); joins
+        one that is still running for exactly the same inputs.
 GET  /api/runs/{id}/fairness-metrics/?suite=a&suite=b[&options=<json>]
-    never computes; always 200 with "status" in completed|running|failed|none.
+    never computes; returns the result of the latest computation for these
+    inputs (with "computedAt") or its status: completed|running|failed|none.
 """
 import json
 from typing import Any, cast

@@ -30,3 +30,22 @@ class PersonaSampleRequestSerializer(serializers.Serializer):
     filters = serializers.DictField(required=False, default=dict)
     stratify = serializers.JSONField(required=False, allow_null=True, default=None)
     seed = serializers.IntegerField(required=False, allow_null=True)
+
+
+class PersonaSetCreateSerializer(serializers.Serializer):
+    """Draw a persona list by conditions on any MatrAIx dimension and save it."""
+
+    name = serializers.CharField(max_length=200)
+    sampleSize = serializers.IntegerField(min_value=1, max_value=1000, source="sample_size")
+    pool = serializers.CharField(required=False, allow_blank=True)
+    # {dimension: [allowed values]}; empty = the whole pool. Keys are data.
+    filters = serializers.DictField(
+        child=serializers.ListField(child=serializers.CharField(allow_blank=False), allow_empty=True),
+        required=False,
+        default=dict,
+    )
+    # null = random (a fresh seed is drawn and recorded).
+    seed = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=0)
+
+    def validate_filters(self, value):
+        return {key: list(dict.fromkeys(values)) for key, values in value.items() if values}

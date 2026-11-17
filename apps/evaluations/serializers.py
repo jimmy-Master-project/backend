@@ -30,6 +30,9 @@ class EvaluationSerializer(serializers.ModelSerializer):
         many=True,
         required=False,
     )
+    testDirections = serializers.ListField(
+        child=serializers.CharField(allow_blank=True), source="test_directions", required=False
+    )
     taskObjectives = serializers.ListField(source="task_objectives", required=False)
     promptCount = serializers.SerializerMethodField()
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
@@ -45,6 +48,7 @@ class EvaluationSerializer(serializers.ModelSerializer):
             "language",
             "classificationLabels",
             "recommendationItems",
+            "testDirections",
             "taskObjectives",
             "status",
             "promptCount",
@@ -55,10 +59,26 @@ class EvaluationSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        if not attrs.get("use_case_description") and not attrs.get("task_objectives"):
-            raise serializers.ValidationError(
-                {"useCaseDescription": "This field is required unless task objectives are uploaded."}
-            )
+        # The initial prompt agent needs both user-defined inputs: the target
+        # LLM description and at least one test direction. They are required
+        # when creating an evaluation; a partial update only checks the fields
+        # it sends, so e.g. PATCH {"taskObjectives": []} still works on
+        # evaluations created before test directions existed.
+        if "use_case_description" in attrs or self.instance is None:
+            attrs["use_case_description"] = (attrs.get("use_case_description") or "").strip()
+            if not attrs["use_case_description"]:
+                raise serializers.ValidationError(
+                    {"useCaseDescription": "Describe the target LLM (its purpose, service scope and policies)."}
+                )
+        if "test_directions" in attrs or self.instance is None:
+            directions = [
+                " ".join(str(item).split()) for item in attrs.get("test_directions") or []
+            ]
+            attrs["test_directions"] = list(dict.fromkeys(item for item in directions if item))
+            if not attrs["test_directions"]:
+                raise serializers.ValidationError(
+                    {"testDirections": "Define at least one test direction."}
+                )
         task_type = attrs.get("task_type") or getattr(self.instance, "task_type", None)
         labels = attrs.get("classification_labels")
         if task_type == Evaluation.TaskType.CLASSIFICATION:
@@ -121,3 +141,44 @@ class EvaluationSerializer(serializers.ModelSerializer):
             population.actual_prompt_count
             for population in obj.prompt_populations.all()
         )
+
+
+class TestPlanTargetInfoSerializer(serializers.Serializer):
+    knownPolicies = serializers.CharField(required=False, allow_blank=True, default="", source="known_policies")
+    systemPromptExcerpt = serializers.CharField(
+        required=False, allow_blank=True, default="", source="system_prompt_excerpt"
+    )
+    userPopulation = serializers.CharField(required=False, allow_blank=True, default="", source="user_population")
+    riskPriorities = serializers.CharField(required=False, allow_blank=True, default="", source="risk_priorities")
+    whenStages = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, source="when_stages"
+    )
+
+
+class GenerateTestPlanSerializer(serializers.Serializer):
+    provider = serializers.CharField(required=False, allow_blank=True, default="")
+    modelName = serializers.CharField(required=False, allow_blank=True, default="", source="model_name")
+    baseUrl = serializers.CharField(required=False, allow_blank=True, default="", source="base_url")
+    temperature = serializers.FloatField(required=False, default=0.7)
+    targetInfo = TestPlanTargetInfoSerializer(required=False, source="target_info")
+    protectedAttributes = serializers.ListField(
+        child=serializers.ChoiceField(choices=["gender", "race_ethnicity"]),
+        required=False,
+        default=list,
+        source="protected_attributes",
+    )
+    totalDirections = serializers.IntegerField(
+        required=False, default=12, min_value=1, max_value=50, source="total_directions"
+    )
+    apply = serializers.BooleanField(required=False, default=True)
+
+    def validate(self, attrs):
+        from django.conf import settings
+
+        attrs["provider"] = attrs.get("provider") or settings.PROMPT_AGENT_PROVIDER
+        attrs["model_name"] = attrs.get("model_name") or settings.PROMPT_AGENT_MODEL_NAME
+        if not attrs["model_name"]:
+            raise serializers.ValidationError(
+                {"modelName": "This field is required unless PROMPT_AGENT_MODEL_NAME is set."}
+            )
+        return attrs

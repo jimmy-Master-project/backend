@@ -1,6 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportMissingImports=false
 import random
 import threading
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -20,6 +21,7 @@ from services.matraix_client import MatrAIxUnavailableError
 from ..models import Prompt, PromptPopulation
 from .counterfactual import (
     build_gender_counterfactual_prompts,
+    build_template_counterfactual_prompts,
     get_selected_gender_attribute,
     has_gender_attribute,
 )
@@ -29,6 +31,11 @@ from .objectives import evaluation_for_objective, get_task_objectives
 
 
 class PromptPopulationGenerationService:
+    def __init__(self):
+        # One instance for the whole population so its call_count is the
+        # population's total number of generation LLM calls.
+        self.prompt_service = PromptGenerationService()
+
     def generate(
         self,
         evaluation: Evaluation,
@@ -39,9 +46,29 @@ class PromptPopulationGenerationService:
         if persona_config.get("enabled"):
             return self._generate_with_personas(evaluation, data, population, persona_config)
         objectives = get_task_objectives(evaluation)
-        prompt_service = PromptGenerationService()
+        prompt_service = self.prompt_service
+        template_pairs = bool(data.get("counterfactual_template"))
+        if template_pairs:
+            existing_metadata = population.metadata if isinstance(population.metadata, dict) else {}
+            population.metadata = {
+                **existing_metadata,
+                "prompt_generator": {
+                    "provider": data["provider"],
+                    "model": data["model_name"],
+                    "temperature": data["temperature"],
+                    "mode": "template_counterfactual",
+                },
+                "fairness": {
+                    "counterfactual_enabled": True,
+                    "attribute": "gender",
+                    "method": "template",
+                    "prompt_count_unit": "pair",
+                    "identical_swap_skipped": 0,
+                },
+            }
+            population.save(update_fields=["metadata"])
         prompts = []
-        for objective in objectives:
+        for objective_index, objective in enumerate(objectives, start=1):
             objective_evaluation = evaluation_for_objective(evaluation, objective)
             objective_prompts = prompt_service.generate_population(
                 evaluation=objective_evaluation,
@@ -55,6 +82,15 @@ class PromptPopulationGenerationService:
                     data.get("additional_instruction") or None,
                 ),
             )
+            if template_pairs:
+                fairness_task = (
+                    "recommendation"
+                    if evaluation.task_type == Evaluation.TaskType.RECOMMENDATION
+                    else "counterfactual"
+                )
+                objective_prompts = build_template_counterfactual_prompts(
+                    objective_prompts, evaluation.task_type, fairness_task, objective_index
+                )
             prompts.extend({**prompt, "objective": objective} for prompt in objective_prompts)
         return with_prompt_constraints(evaluation, prompts)
 
@@ -128,6 +164,8 @@ class PromptPopulationGenerationService:
                 "sampling_seed": seed,
                 "persona_ids": persona_ids,
                 "excluded_persona_ids": excluded_persona_ids,
+                "persona_set_id": persona_config.get("persona_set_id") if persona_ids else None,
+                "persona_set_name": _persona_set_name(persona_config.get("persona_set_id")) if persona_ids else "",
                 "matraix_sample": sample.get("matraix_sample"),
                 "unique_persona_count": len(sampled_personas),
                 "reused_personas": len(sampled_personas) < data["prompt_count"],
@@ -154,7 +192,7 @@ class PromptPopulationGenerationService:
             evaluation,
             data.get("additional_instruction") or None,
         )
-        prompt_service = PromptGenerationService()
+        prompt_service = self.prompt_service
 
         if counterfactual_enabled:
             if not has_gender_attribute(selected_attributes):
@@ -292,8 +330,11 @@ class PromptPopulationGenerationRunner:
         evaluation = Evaluation.objects.get(pk=evaluation_id)
         population = PromptPopulation.objects.get(pk=population_id)
 
+        service = PromptPopulationGenerationService()
+        started = time.monotonic()
+        started_at = timezone.now()
         try:
-            prompts = PromptPopulationGenerationService().generate(evaluation, data, population)
+            prompts = service.generate(evaluation, data, population)
         except MatrAIxUnavailableError:
             self._fail(population, evaluation, "Persona service is unavailable.")
             return
@@ -318,7 +359,16 @@ class PromptPopulationGenerationRunner:
         )
         population.actual_prompt_count = len(prompts)
         population.status = PromptPopulation.Status.COMPLETED
-        population.save(update_fields=["actual_prompt_count", "status"])
+        metadata = population.metadata if isinstance(population.metadata, dict) else {}
+        # Generation cost for comparing prompt-generation methods (experiment 1).
+        metadata["generation_stats"] = {
+            "llm_calls": service.prompt_service.call_count,
+            "seconds": round(time.monotonic() - started, 2),
+            "started_at": started_at.isoformat(),
+            "finished_at": timezone.now().isoformat(),
+        }
+        population.metadata = metadata
+        population.save(update_fields=["actual_prompt_count", "status", "metadata"])
 
         evaluation.status = Evaluation.Status.PROMPT_READY
         evaluation.save(update_fields=["status", "updated_at"])
@@ -330,3 +380,12 @@ class PromptPopulationGenerationRunner:
         evaluation.status = Evaluation.Status.FAILED
         evaluation.save(update_fields=["status", "updated_at"])
 
+
+
+def _persona_set_name(set_id: Any) -> str:
+    if not set_id:
+        return ""
+    from apps.personas.models import PersonaSet
+
+    persona_set = PersonaSet.objects.filter(pk=set_id).only("name").first()
+    return persona_set.name if persona_set else ""

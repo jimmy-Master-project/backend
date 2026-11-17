@@ -1,7 +1,14 @@
 # pyright: reportMissingImports=false
 from django.urls import path
 
-from .views import PersonaAttributesView, PersonaDetailView, PersonaListView, PersonaSampleView
+from .views import (
+    PersonaAttributesView,
+    PersonaDetailView,
+    PersonaListView,
+    PersonaSampleView,
+    PersonaSetDetailView,
+    PersonaSetListCreateView,
+)
 
 urlpatterns = [
     path("persona/attributes", PersonaAttributesView.as_view(), name="persona-attributes-no-slash"),
@@ -12,4 +19,6 @@ urlpatterns = [
     path("persona/personas/<str:persona_id>/", PersonaDetailView.as_view(), name="persona-detail"),
     path("persona/sample", PersonaSampleView.as_view(), name="persona-sample-no-slash"),
     path("persona/sample/", PersonaSampleView.as_view(), name="persona-sample"),
+    path("persona/sets/", PersonaSetListCreateView.as_view(), name="persona-set-list"),
+    path("persona/sets/<int:set_id>/", PersonaSetDetailView.as_view(), name="persona-set-detail"),
 ]

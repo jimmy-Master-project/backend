@@ -5,7 +5,7 @@ Package layout:
   service.py     LangFairMetricService (synchronous compute, suite dispatch dict)
   runner.py      LangFairMetricJobRunner (background thread + in-process registry)
   cache.py       cache key + LangFairMetricResult persistence / pruning
-  evaluators.py  process-wide lru_cache of LangFair evaluator objects
+  evaluators.py  factories building fresh LangFair evaluator objects per computation
   options.py     whitelist / clamping of user-supplied options
   suites/        one module per metric suite
   utils.py       constants and shared helpers
@@ -15,7 +15,6 @@ Everything previously importable from ``apps.fairness.services`` is re-exported.
 from apps.fairness.models import LangFairMetricResult  # noqa: F401
 
 from .cache import METRICS_SCHEMA_VERSION, _langfair_cache_key, prune_results
-from .evaluators import clear_evaluator_caches
 from .options import normalize_metric_options
 from .runner import LangFairMetricJobRunner, reap_stale_jobs
 from .service import SUITE_HANDLERS, LangFairMetricService, PreparedRun
@@ -70,7 +69,6 @@ __all__ = [
     "build_classification_metric_inputs",
     "build_counterfactual_text_pairs",
     "build_recommendation_metric_inputs",
-    "clear_evaluator_caches",
     "evaluate_classification_metrics_safely",
     "extract_expected_classification_label",
     "extract_protected_group",

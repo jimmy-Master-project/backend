@@ -9,6 +9,7 @@ from apps.evaluations.models import Evaluation
 from apps.prompts.models import Prompt, PromptPopulation
 from services.matraix_client import MatrAIxUnavailableError
 
+from .models import PersonaSet
 from .services import PersonaService, PersonaServiceError
 
 
@@ -596,3 +597,54 @@ class PersonaPromptPopulationTests(TestCase):
         self.assertEqual(persona_meta["persona_ids"], ["p1", "p2", "p3"])
         self.assertEqual(persona_meta["excluded_persona_ids"], ["p2"])
         self.assertEqual(persona_meta["unique_persona_count"], 2)
+
+
+class PersonaSetApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def _fake_client(self, ids, dims):
+        client = Mock()
+        client.sample_personas.return_value = {"persona_ids": ids}
+        client.get_persona.side_effect = lambda persona_id, pool=None: {
+            "persona_id": persona_id,
+            "dimensions": dims.get(persona_id, {}),
+        }
+        return client
+
+    def test_create_samples_by_any_dimension_and_saves(self):
+        fake = self._fake_client(
+            ["1", "2", "3"],
+            {
+                "1": {"occupation": "Nurse", "gender_identity": "Woman"},
+                "2": {"gender_identity": "Man"},  # lacks occupation -> skipped
+                "3": {"occupation": "Nurse", "gender_identity": "Man"},
+            },
+        )
+        with patch("apps.personas.views.PersonaService", return_value=PersonaService(client=fake)):
+            res = self.client.post(
+                "/api/persona/sets/",
+                {"name": "nurses", "sampleSize": 2, "filters": {"occupation": ["Nurse"]}},
+                format="json",
+            )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data["personaIds"], ["1", "3"])
+        self.assertIsInstance(res.data["seed"], int)  # random seed recorded
+        self.assertEqual(fake.sample_personas.call_args.kwargs["filters"], {"occupation": ["Nurse"]})
+
+        listed = self.client.get("/api/persona/sets/").data
+        self.assertEqual([item["name"] for item in listed], ["nurses"])
+        detail = self.client.get(f"/api/persona/sets/{res.data['id']}/").data
+        self.assertEqual(detail["personas"][0]["attributes"]["occupation"], "Nurse")
+        self.assertEqual(self.client.delete(f"/api/persona/sets/{res.data['id']}/").status_code, 204)
+
+    def test_create_rejects_when_too_few_match(self):
+        fake = self._fake_client(["1"], {"1": {"occupation": "Nurse"}})
+        with patch("apps.personas.views.PersonaService", return_value=PersonaService(client=fake)):
+            res = self.client.post(
+                "/api/persona/sets/",
+                {"name": "x", "sampleSize": 5, "filters": {"occupation": ["Nurse"]}, "seed": 7},
+                format="json",
+            )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(PersonaSet.objects.exists())

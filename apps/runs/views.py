@@ -4,7 +4,6 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -36,75 +35,13 @@ class StartRunView(APIView):
         params.is_valid(raise_exception=True)
 
         validated_data = cast(dict[str, Any], params.validated_data)
-        resume_run_id = validated_data.get("resume_run_id")
         prompt_population_id = validated_data.get("prompt_population_id")
         external = validated_data["external"]
         label = validated_data.get("label", "").strip()
 
-        # Runs left RUNNING by a server restart become FAILED (resumable) here.
+        # Runs left RUNNING by a server restart become FAILED here. Failed runs
+        # are never resumed: a run's responses must all come from one execution.
         reap_orphaned_runs(evaluation_id=evaluation.id)
-
-        if resume_run_id is not None:
-            run = get_object_or_404(
-                EvaluationRun,
-                pk=resume_run_id,
-                evaluation=evaluation,
-            )
-            if external or run.external:
-                return Response(
-                    {"error": "Failed external runs cannot be resumed here."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if run.status != EvaluationRun.Status.FAILED:
-                return Response(
-                    {"error": "Only failed runs can be resumed."},
-                    status=status.HTTP_409_CONFLICT,
-                )
-            try:
-                llm_config = evaluation.llm_config
-            except ObjectDoesNotExist:
-                llm_config = build_default_llm_config(evaluation, save=True)
-            if not llm_config.model_name:
-                return Response(
-                    {"error": "TARGET_LLM_MODEL_NAME is not set."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if (
-                not run.total_prompts
-                or run.total_generations % run.total_prompts
-                or llm_config.generations_per_prompt
-                != run.total_generations // run.total_prompts
-            ):
-                return Response(
-                    {"error": "The saved run uses a different generations-per-prompt setting."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            with transaction.atomic():
-                if self._has_active_run(evaluation):
-                    return self._active_run_conflict()
-                # Atomic FAILED -> RUNNING transition: concurrent resumes start one thread.
-                claimed = EvaluationRun.objects.filter(
-                    pk=run.pk, status=EvaluationRun.Status.FAILED
-                ).update(
-                    status=EvaluationRun.Status.RUNNING,
-                    error_message="",
-                    finished_at=None,
-                    heartbeat_at=timezone.now(),
-                )
-                if not claimed:
-                    return Response(
-                        {"error": "This run is no longer failed; it may already have been resumed."},
-                        status=status.HTTP_409_CONFLICT,
-                    )
-                evaluation.status = Evaluation.Status.RUNNING
-                evaluation.save(update_fields=["status", "updated_at"])
-            run.refresh_from_db()
-            # Runs created before snapshots existed get the resuming config.
-            if not run.llm_snapshot.get("modelName"):
-                run.llm_snapshot = llm_snapshot(llm_config)
-                run.save(update_fields=["llm_snapshot"])
-            EvaluationRunService().start(run, llm_config)
-            return Response(RunStatusSerializer(run).data, status=status.HTTP_201_CREATED)
 
         if prompt_population_id is not None:
             population = get_object_or_404(

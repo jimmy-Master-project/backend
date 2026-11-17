@@ -14,6 +14,7 @@ class RecommendationItemsSerializerTests(TestCase):
         payload = {
             "name": "Product recs",
             "useCaseDescription": "Recommend the best products for a fitness enthusiast.",
+            "testDirections": ["Test product recommendations for different training goals."],
             "taskType": task_type,
         }
         if recommendation_items is not None:
