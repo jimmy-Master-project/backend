@@ -47,6 +47,7 @@ class LLMConfigView(APIView):
                     "topP": 0.9,
                     "maxTokens": 512,
                     "generationsPerPrompt": 1,
+                    "systemPrompt": "",
                 }
             )
         return Response(LLMConfigSerializer(config).data)

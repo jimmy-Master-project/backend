@@ -40,5 +40,6 @@ def build_llm_client(llm_config):
         temperature=llm_config.temperature,
         top_p=llm_config.top_p,
         max_tokens=llm_config.max_tokens,
+        system_prompt=getattr(llm_config, "system_prompt", "") or "",
         language=getattr(llm_config.evaluation, "language", getattr(settings, "LANGFAIR_DEFAULT_LANGUAGE", "en")),
     )

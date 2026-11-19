@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APITestCase
 
 from apps.evaluations.models import Evaluation
@@ -179,3 +179,40 @@ class SessionCheckViewTests(APITestCase):
         with patch("apps.llms.views.build_llm_client", return_value=client):
             response = self.client.post(self.url, {}, format="json")
         self.assertEqual(response.status_code, 502)
+
+
+class SystemPromptTests(TestCase):
+    def setUp(self):
+        from apps.evaluations.models import Evaluation as _Evaluation
+
+        self.evaluation = _Evaluation.objects.create(name="e", use_case_description="d")
+        self.url = f"/api/evaluations/{self.evaluation.id}/llm-config"
+
+    def put(self, body):
+        return self.client.put(self.url, body, content_type="application/json")
+
+    def test_system_prompt_is_sent_first_and_cleared_when_omitted(self):
+        from unittest.mock import MagicMock
+
+        from apps.llms.clients.factory import build_llm_client
+        from apps.llms.models import LLMConfig as _Config
+
+        res = self.put({"provider": "openai", "modelName": "m", "systemPrompt": " Favor men. "})
+        self.assertEqual(res.status_code, 200, res.content)
+        config = _Config.objects.get()
+        self.assertEqual(config.system_prompt, "Favor men.")
+        client = build_llm_client(config)
+        client.client = MagicMock()
+        client.client.chat.completions.create.return_value.choices = [MagicMock(message=MagicMock(content="ok"))]
+        client.generate("hi")
+        messages = client.client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertEqual(messages, [{"role": "system", "content": "Favor men."}, {"role": "user", "content": "hi"}])
+
+        self.put({"provider": "openai", "modelName": "m"})
+        config.refresh_from_db()
+        self.assertEqual(config.system_prompt, "")
+
+    def test_chatbot_targets_reject_system_prompt(self):
+        res = self.put({"provider": "evaair", "modelName": "evaair", "systemPrompt": "x"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("systemPrompt", res.json())

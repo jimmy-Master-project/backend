@@ -110,6 +110,9 @@ def _serialize_population_summary(population, generating_population_id=None):
         "generationMode": "",
         # {llmCalls, seconds, startedAt, finishedAt}; empty for older populations.
         "generationStats": {},
+        "generationRequest": None,
+        "taskObjectives": None,
+        "taskObjectivesRaw": None,
         "createdAt": None,
         # Newest population still being generated (may be newer than the one
         # summarized here); lets a reloaded client resume polling it.
@@ -139,10 +142,30 @@ def _serialize_population_summary(population, generating_population_id=None):
             "fairness": camelize_keys(fairness),
             "generationMode": str((metadata.get("prompt_generator") or {}).get("mode") or ""),
             "generationStats": camelize_keys(metadata.get("generation_stats") or {}),
+            # Request body that produced this population (null for older ones).
+            "generationRequest": metadata.get("generation_request"),
+            "taskObjectives": metadata.get("task_objectives"),
+            "taskObjectivesRaw": metadata.get("task_objectives_raw"),
             "createdAt": population.created_at.isoformat() if population.created_at else None,
         }
     )
     return summary
+
+
+_GENERATION_REQUEST_KEYS = (
+    "provider",
+    "modelName",
+    "baseUrl",
+    "promptCount",
+    "temperature",
+    "additionalInstruction",
+    "persona",
+    "counterfactualTemplate",
+)
+
+
+def _generation_request_snapshot(body) -> dict:
+    return {key: body.get(key) for key in _GENERATION_REQUEST_KEYS if key in body}
 
 
 class GeneratePromptPopulationView(APIView):
@@ -167,7 +190,8 @@ class GeneratePromptPopulationView(APIView):
                 task_type=Evaluation.TaskType.TEXT_GENERATION,
             )
 
-        objective_count = len(get_task_objectives(evaluation))
+        objectives = get_task_objectives(evaluation)
+        objective_count = len(objectives)
         persona = data.get("persona") or {}
         counterfactual = (bool(persona.get("enabled")) and (
             bool(persona.get("counterfactual_enabled"))
@@ -181,7 +205,17 @@ class GeneratePromptPopulationView(APIView):
             temperature=data["temperature"],
             requested_prompt_count=requested_prompt_count,
             additional_instruction=data.get("additional_instruction", ""),
+            name=data.get("name", ""),
             status=PromptPopulation.Status.GENERATING,
+            # Everything needed to go back to this step and generate a variant:
+            # the request as sent (camelCase, no secrets) and the question
+            # directions the evaluation had at that moment.
+            metadata={
+                "generation_request": _generation_request_snapshot(request.data),
+                "task_objectives": objectives,
+                # Stored objectives with their test-plan details, for restoring them.
+                "task_objectives_raw": list(evaluation.task_objectives or []),
+            },
         )
         evaluation.status = Evaluation.Status.GENERATING_PROMPTS
         evaluation.save(update_fields=["status", "updated_at"])

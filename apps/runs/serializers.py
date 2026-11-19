@@ -17,6 +17,7 @@ def llm_snapshot(llm_config: LLMConfig | None, external: bool = False) -> dict:
         "topP": llm_config.top_p,
         "maxTokens": llm_config.max_tokens,
         "generationsPerPrompt": llm_config.generations_per_prompt,
+        "systemPrompt": llm_config.system_prompt,
         "external": external,
     }
 
@@ -54,6 +55,7 @@ class RunStatusSerializer(serializers.ModelSerializer):
     finishedAt = serializers.DateTimeField(source="finished_at", read_only=True)
     llmSnapshot = serializers.JSONField(source="llm_snapshot", read_only=True)
     promptPopulationId = serializers.IntegerField(source="prompt_population_id", read_only=True)
+    condition = serializers.SerializerMethodField()
 
     class Meta:
         model = EvaluationRun
@@ -74,7 +76,27 @@ class RunStatusSerializer(serializers.ModelSerializer):
             "label",
             "llmSnapshot",
             "promptPopulationId",
+            "condition",
         ]
+
+    def get_condition(self, obj):
+        """Experiment condition of the population this run sent (for comparing runs)."""
+        population = obj.prompt_population
+        metadata = population.metadata if isinstance(population.metadata, dict) else {}
+        persona = metadata.get("persona") if isinstance(metadata.get("persona"), dict) else {}
+        raw_objectives = metadata.get("task_objectives_raw") or []
+        strategies = sorted(
+            {str(item["strategy"]) for item in raw_objectives if isinstance(item, dict) and item.get("strategy")}
+        )
+        objectives = metadata.get("task_objectives")
+        return {
+            "populationName": population.name,
+            "personaBased": bool(persona.get("enabled")),
+            "personaSetName": persona.get("persona_set_name") or "",
+            "generationMode": str((metadata.get("prompt_generator") or {}).get("mode") or ""),
+            "objectiveCount": len(objectives) if isinstance(objectives, list) else None,
+            "directionStrategies": strategies,
+        }
 
     def get_progress(self, obj):
         if not obj.total_generations:

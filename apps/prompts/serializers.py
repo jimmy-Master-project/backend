@@ -102,6 +102,8 @@ class PersonaConfigSerializer(serializers.Serializer):
 
 
 class GeneratePromptPopulationSerializer(serializers.Serializer):
+    # Experiment condition label, e.g. "G1 No persona" (editable later).
+    name = serializers.CharField(required=False, allow_blank=True, max_length=255, default="")
     provider = serializers.CharField(required=False, allow_blank=True, default="")
     modelName = serializers.CharField(required=False, allow_blank=True, default="", source="model_name")
     baseUrl = serializers.CharField(required=False, allow_blank=True, default="", source="base_url")

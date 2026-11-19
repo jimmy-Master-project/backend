@@ -105,7 +105,7 @@ class EvaluationRunServiceTests(RunTestMixin, TestCase):
                 "id", "status", "totalPrompts", "completedPrompts", "totalGenerations",
                 "completedGenerations", "failedGenerations", "progress", "errorMessage",
                 "external", "heartbeatAt", "startedAt", "finishedAt", "label",
-                "llmSnapshot", "promptPopulationId",
+                "llmSnapshot", "promptPopulationId", "condition",
             },
         )
 
@@ -371,3 +371,26 @@ class RunExportTests(RunTestMixin, TestCase):
     def test_unknown_table_is_rejected(self):
         response = self.client.get(f"/api/runs/{self.run.id}/export/", {"table": "nope"})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class RunConditionTests(TestCase):
+    def test_run_list_reports_population_condition(self):
+        from apps.evaluations.models import Evaluation as _Evaluation
+        from apps.prompts.models import PromptPopulation as _Population
+        from apps.runs.models import EvaluationRun as _Run
+
+        evaluation = _Evaluation.objects.create(name="e", use_case_description="d")
+        population = _Population.objects.create(
+            evaluation=evaluation, name="G1", provider="p", model_name="m", requested_prompt_count=1,
+            metadata={
+                "prompt_generator": {"mode": "template_counterfactual"},
+                "task_objectives": ["a", "b"],
+                "task_objectives_raw": [{"objective": "a", "strategy": "S1"}, {"objective": "b", "strategy": "S1"}],
+            },
+        )
+        _Run.objects.create(evaluation=evaluation, prompt_population=population)
+        condition = self.client.get(f"/api/evaluations/{evaluation.id}/runs/").json()[0]["condition"]
+        self.assertEqual(condition, {
+            "populationName": "G1", "personaBased": False, "personaSetName": "",
+            "generationMode": "template_counterfactual", "objectiveCount": 2, "directionStrategies": ["S1"],
+        })

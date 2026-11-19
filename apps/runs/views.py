@@ -23,7 +23,7 @@ class StartRunView(APIView):
         """Every run of the evaluation, newest first (the run history)."""
         evaluation = get_object_or_404(Evaluation, pk=evaluation_id)
         reap_orphaned_runs(evaluation_id=evaluation.id)
-        runs = evaluation.runs.annotate(
+        runs = evaluation.runs.select_related("prompt_population").annotate(
             failed_generations=Count("responses", filter=Q(responses__error__isnull=False))
         ).order_by("-id")
         return Response(RunStatusSerializer(runs, many=True).data)

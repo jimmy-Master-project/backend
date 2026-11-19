@@ -1,7 +1,7 @@
 from django.conf import settings
 from rest_framework import serializers
 
-from .clients.factory import CLIENTS
+from .clients.factory import CLIENTS, KEYLESS_PROVIDERS
 from .models import LLMConfig
 
 
@@ -18,6 +18,9 @@ class LLMConfigSerializer(serializers.ModelSerializer):
     generationsPerPrompt = serializers.IntegerField(
         source="generations_per_prompt", required=False, min_value=1
     )
+    systemPrompt = serializers.CharField(
+        source="system_prompt", required=False, allow_blank=True, trim_whitespace=False
+    )
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
     updatedAt = serializers.DateTimeField(source="updated_at", read_only=True)
 
@@ -33,6 +36,7 @@ class LLMConfigSerializer(serializers.ModelSerializer):
             "topP",
             "maxTokens",
             "generationsPerPrompt",
+            "systemPrompt",
             "createdAt",
             "updatedAt",
         ]
@@ -44,6 +48,15 @@ class LLMConfigSerializer(serializers.ModelSerializer):
         if not attrs["model_name"]:
             raise serializers.ValidationError(
                 {"modelName": "This field is required unless TARGET_LLM_MODEL_NAME is set."}
+            )
+        # A save without systemPrompt clears it: an injected bias must never
+        # linger unseen into a later "plain" run (e.g. saved from the flow editor).
+        attrs["system_prompt"] = (attrs.get("system_prompt") or "").strip()
+        provider = attrs.get("provider") or getattr(self.instance, "provider", "")
+        if attrs["system_prompt"] and provider in KEYLESS_PROVIDERS:
+            # The chatbot services forward only the last user message.
+            raise serializers.ValidationError(
+                {"systemPrompt": "Web chatbot targets ignore system prompts; use an API model to inject bias."}
             )
         return attrs
 

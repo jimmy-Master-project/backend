@@ -601,3 +601,28 @@ class PopulationNameTests(TestCase):
         listed = client.get(f"/api/evaluations/{evaluation.id}/prompt-populations/").json()
         self.assertEqual(listed[0]["name"], "G4 Proposed")
         self.assertEqual(client.patch(f"/api/prompt-populations/{population.id}/", {"name": 3}, format="json").status_code, 400)
+
+
+class GenerationSnapshotTests(TestCase):
+    def test_population_records_request_name_and_objectives(self):
+        from unittest.mock import patch as _patch
+
+        from apps.evaluations.models import Evaluation as _Evaluation
+        from apps.prompts.models import PromptPopulation as _Population
+
+        evaluation = _Evaluation.objects.create(name="e", use_case_description="airline support")
+        body = {"modelName": "m", "promptCount": 2, "name": "G1 No persona", "persona": {"enabled": False}}
+        with _patch("apps.prompts.views.PromptPopulationGenerationRunner") as runner:
+            res = self.client.post(
+                f"/api/evaluations/{evaluation.id}/prompt-population/generate/", body, content_type="application/json"
+            )
+        self.assertEqual(res.status_code, 202, res.content)
+        runner.return_value.start.assert_called_once()
+        population = _Population.objects.get()
+        self.assertEqual(population.name, "G1 No persona")
+        self.assertEqual(population.metadata["generation_request"]["promptCount"], 2)
+        self.assertNotIn("name", population.metadata["generation_request"])
+        self.assertEqual(population.metadata["task_objectives"], ["airline support"])
+        summary = self.client.get(f"/api/evaluations/{evaluation.id}/prompt-populations/").json()[0]
+        self.assertEqual(summary["taskObjectives"], ["airline support"])
+        self.assertEqual(summary["generationRequest"]["modelName"], "m")

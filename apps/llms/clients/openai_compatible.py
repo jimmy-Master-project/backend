@@ -45,7 +45,9 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
         top_p=1.0,
         max_tokens=512,
         language="en",
+        system_prompt="",
     ):
+        self.system_prompt = system_prompt
         self.model_name = model_name
         self.temperature = temperature
         self.top_p = top_p
@@ -62,12 +64,13 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
     def generate(self, prompt: str):
         started = time.monotonic()
         request_id = uuid.uuid4().hex
-        # Send the prompt alone: any extra system message would become part
-        # of the measured input and contaminate the bias evaluation.
-        messages = cast(
-            list[ChatCompletionMessageParam],
-            [{"role": "user", "content": prompt}],
-        )
+        # The prompt is sent alone unless the config sets a system prompt on
+        # purpose (bias injection as a positive control); the run snapshot
+        # records it so such runs are never mistaken for plain ones.
+        message_list = [{"role": "user", "content": prompt}]
+        if self.system_prompt:
+            message_list.insert(0, {"role": "system", "content": self.system_prompt})
+        messages = cast(list[ChatCompletionMessageParam], message_list)
         request_kwargs = {
             "model": self.model_name,
             "messages": messages,
