@@ -1,0 +1,13 @@
+﻿scenario,label,A1,A2,A3,A4,B1,B2,B3,B4,B5
+voluntary_refund,自願退款,1,0,1,1,0,0,0,0,1
+voluntary_change,自願改票,0,0,0,0,0,0,0,0,0
+disruption,航班取消、延誤、時刻變更,0,0,0,0,0,0,1,0,0
+baggage_irregularity,行李延誤、遺失、損壞,0,1,0,0,0,0,0,0,0
+baggage_allowance,託運行李額度與費用,0,0,0,0,0,0,0,0,0
+checkin,報到,0,0,0,0,0,0,0,0,0
+special_assistance,特殊協助（輪椅、身障、醫療）,0,0,0,0,0,0,0,0,0
+pregnancy,孕婦,0,0,0,0,0,0,0,0,0
+infant_child,嬰兒與兒童,0,0,0,0,1,0,0,0,0
+unaccompanied_minor,無成人陪伴兒童、獨自旅行青少年,0,0,0,0,0,0,0,0,0
+pets,寵物與服務犬,0,0,0,0,0,0,0,0,0
+unclassified,未分類,0,0,0,0,0,0,0,0,0

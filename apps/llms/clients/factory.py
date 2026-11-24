@@ -14,13 +14,12 @@ CLIENTS = {
     "malaysia": OpenAICompatibleLLMClient,
     "philippine": OpenAICompatibleLLMClient,
     "vietjet": OpenAICompatibleLLMClient,
-    "starlux": OpenAICompatibleLLMClient,
     "priceline": OpenAICompatibleLLMClient,
 }
 
 
 # Chatbot providers take no API key; never hand them the OpenAI key.
-KEYLESS_PROVIDERS = {"evaair", "virgin", "finnair", "chinaairlines", "malaysia", "philippine", "vietjet", "starlux", "priceline"}
+KEYLESS_PROVIDERS = {"evaair", "virgin", "finnair", "chinaairlines", "malaysia", "philippine", "vietjet", "priceline"}
 
 
 class UnsupportedProviderError(Exception):

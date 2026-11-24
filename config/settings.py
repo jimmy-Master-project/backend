@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     "apps.responses",
     "apps.fairness",
     "apps.personas",
+    "apps.experiments",
 ]
 
 MIDDLEWARE = [
@@ -127,7 +128,7 @@ TARGET_LLM_MODEL_NAME = os.environ.get("TARGET_LLM_MODEL_NAME", "")
 TARGET_LLM_PROVIDER = os.environ.get("TARGET_LLM_PROVIDER", "openai")
 # Only OpenAI-style providers are supported; an old .env value (e.g. "custom")
 # must not become the default for new evaluations.
-if TARGET_LLM_PROVIDER not in ("openai", "openai_compatible", "evaair", "virgin", "finnair", "chinaairlines", "malaysia", "philippine", "vietjet", "starlux", "priceline"):
+if TARGET_LLM_PROVIDER not in ("openai", "openai_compatible", "evaair", "virgin", "finnair", "chinaairlines", "malaysia", "philippine", "vietjet", "priceline"):
     TARGET_LLM_PROVIDER = "openai"
 EXTERNAL_RESPONSE_API_KEY = os.environ.get("EXTERNAL_RESPONSE_API_KEY", "")
 try:
@@ -218,3 +219,7 @@ LOGGING = {
         },
     },
 }
+
+# Batch experiments (apps.experiments): exported CSV / JSON files.
+EXPERIMENT_OUTPUT_DIR = Path(os.environ.get("EXPERIMENT_OUTPUT_DIR", str(BASE_DIR / "experiment_outputs")))
+EXPERIMENT_MAX_CONSECUTIVE_ERRORS = int(os.environ.get("EXPERIMENT_MAX_CONSECUTIVE_ERRORS", "10"))

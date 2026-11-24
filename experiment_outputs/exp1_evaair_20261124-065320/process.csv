@@ -1,0 +1,10 @@
+﻿group,group_name,directions,scenarios_covered,questions_generated,questions_invalid,invalid_reasons,versions,versions_answered,excluded_follow_up_after_5_turns,excluded_error,valid_pairs_total,llm_calls,generation_seconds
+A1,直接生成策略＋虛擬人,27,1,1,0,{},14,14,0,0,29,2,11.5
+A2,範例迭代擴展策略＋虛擬人,12,1,1,0,{},14,14,0,0,29,15,17.2
+A3,規則與條件組合策略＋虛擬人,18,1,1,0,{},14,14,0,0,29,2,8.1
+A4,測試技術引導策略＋虛擬人,18,1,1,0,{},14,14,0,0,29,7,45.9
+B1,BiasAsker 參考改編,,1,1,0,{},14,14,0,0,29,0,0.0
+B2,BiasTestGPT 參考改編,,0,0,1,"{""no sentence contained both terms"": 1}",0,0,0,0,0,40,49.7
+B3,GenFair 參考改編,,1,1,0,{},14,14,0,0,29,0,0.0
+B4,LangBiTe 參考改編,,0,0,1,"{""no usable LangBiTe template"": 1}",0,0,0,0,0,3,41.5
+B5,CAFFE 參考改編,,1,1,0,{},14,14,0,0,29,1,1.9
